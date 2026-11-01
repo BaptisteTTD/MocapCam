@@ -35,9 +35,17 @@ import {
 import { parseQr, StudioClient, type ConnectInfo, type ConnState, type StudioCommand } from './src/studio'
 import { decodeQr } from './src/qr'
 import type { Image } from 'react-native-nitro-image'
-import { cleanName, loadSettings, saveSettings, type Settings } from './src/settings'
+import {
+  addPending,
+  cleanName,
+  getPending,
+  loadSettings,
+  removePending,
+  saveSettings,
+  type Settings,
+} from './src/settings'
 
-const APP_VERSION = '1.0.2'
+const APP_VERSION = '1.0.3'
 
 // Erreurs hors affichage (minuteries, callbacks natifs) : on les montre à l'écran
 // au lieu de laisser l'app se fermer.
@@ -67,13 +75,7 @@ class ErrorBoundary extends React.Component<{ children: React.ReactNode }, { err
   static getDerivedStateFromError(error: Error) {
     return { error }
   }
-  private onGlobal = (error: Error) => this.setState({ error })
-  componentDidMount() {
-    errorListeners.add(this.onGlobal)
-  }
-  componentWillUnmount() {
-    errorListeners.delete(this.onGlobal)
-  }
+
   render() {
     if (this.state.error) {
       return (
@@ -402,7 +404,9 @@ function CaptureScreen({
       uploadType: UploadType.BINARY_CONTENT,
       headers: { 'Content-Type': 'video/mp4' },
     })
-    const sub = task.addListener('progress', ({ bytesSent, totalBytes }) => {
+    const sub = task.addListener('progress', (ev) => {
+      const bytesSent = Number(ev.bytesSent)
+      const totalBytes = Number(ev.totalBytes)
       const t = Date.now()
       if (t - lastSent > 300 || bytesSent === totalBytes) {
         lastSent = t
@@ -413,6 +417,7 @@ function CaptureScreen({
     try {
       const res = await task.uploadAsync()
       if (res.status === 200) {
+        removePending(take)
         client.send({ t: 'uploaded', take })
         try {
           file.delete()
@@ -457,13 +462,17 @@ function CaptureScreen({
           (filePath) => {
             setRecording(null)
             recorderRef.current = null
-            client?.send({
-              t: 'recorded',
-              take,
-              duration: rec.recordedDuration,
-              size: rec.recordedFileSize,
-            })
-            void uploadFile(filePath, take)
+            addPending({ take, path: filePath, cam: nameRef.current })
+            try {
+              client?.send({
+                t: 'recorded',
+                take,
+                duration: Number(rec.recordedDuration),
+                size: Number(rec.recordedFileSize),
+              })
+            } finally {
+              void uploadFile(filePath, take)
+            }
           },
           (error) => {
             setRecording(null)
@@ -583,6 +592,15 @@ function CaptureScreen({
     (cmd: StudioCommand) => {
       switch (cmd.t) {
         case 'welcome':
+          for (const p of getPending()) {
+            try {
+              const uri = p.path.startsWith('file://') ? p.path : `file://${p.path}`
+              if (new File(uri).exists) void uploadFile(p.path, p.take)
+              else removePending(p.take)
+            } catch {
+              removePending(p.take)
+            }
+          }
           if (cmd.name && cmd.name !== nameRef.current) onSettings({ ...settings, name: cmd.name })
           if (typeof cmd.prefer60 === 'boolean') applyPrefer60(cmd.prefer60)
           if (typeof cmd.preview === 'number') previewFps.current = cmd.preview
@@ -624,10 +642,22 @@ function CaptureScreen({
           break
       }
     },
-    [arm, startAt, stop, lock, unlock, sendSnapshot, onSettings, settings, applyPrefer60],
+    [arm, startAt, stop, lock, unlock, sendSnapshot, onSettings, settings, applyPrefer60, uploadFile],
   )
   const onCommandRef = useRef(onCommand)
   onCommandRef.current = onCommand
+
+  // erreurs inattendues : bandeau + signalement au PC, sans couper la caméra ni la connexion
+  useEffect(() => {
+    const l = (e: Error) => {
+      flash(`Erreur : ${e?.message ?? String(e)}`)
+      clientRef.current?.send({ t: 'error', message: `app : ${e?.message ?? String(e)}` })
+    }
+    errorListeners.add(l)
+    return () => {
+      errorListeners.delete(l)
+    }
+  }, [])
 
   // ---------------------------------------------------------------- connexion
   useEffect(() => {

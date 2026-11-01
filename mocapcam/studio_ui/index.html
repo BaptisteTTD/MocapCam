@@ -26,6 +26,7 @@
   .view .rec { position: absolute; right: 10px; top: 8px; color: var(--rec); font-weight: 700; display: none; }
   .card.recording .rec { display: block; }
   .view .nopreview { color: var(--muted); }
+  .view .paused { position: absolute; left: 0; right: 0; bottom: 0; padding: 6px 10px; background: #000a; color: #ddd; font-size: 12.5px; text-align: center; }
   .meta { display: flex; flex-wrap: wrap; gap: 6px 14px; padding: 10px 12px 4px; color: var(--muted); font-size: 12.5px; }
   .meta b { color: var(--text); font-weight: 600; }
   .meta .bad { color: var(--err); } .meta .good { color: var(--ok); } .meta .mid { color: var(--warn); }
@@ -178,6 +179,7 @@ function camCard(c) {
     <div class="view">
       ${c.preview_ts ? `<img data-prev="${c.id}" src="/preview/${c.id}?t=${c.preview_ts}">` : '<span class="nopreview">en attente de l\'image…</span>'}
       <div class="name">${esc(c.name)}</div><div class="rec">● REC</div>
+      ${c.recording && c.platform === 'ios' ? '<div class="paused">aperçu en pause pendant l\'enregistrement (iPhone)</div>' : ''}
     </div>
     <div class="meta">
       <span>${esc(c.platform)} ${esc(c.device || c.model || '')}</span>

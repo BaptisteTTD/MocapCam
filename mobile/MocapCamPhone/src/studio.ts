@@ -21,6 +21,11 @@ export interface ConnectInfo {
   token: string
 }
 
+/** JSON.stringify qui accepte les BigInt (renvoyés par certaines API iOS). */
+export function toJson(v: unknown): string {
+  return JSON.stringify(v, (_k, x) => (typeof x === 'bigint' ? Number(x) : x))
+}
+
 export type ConnState = 'idle' | 'connecting' | 'connected' | 'error'
 
 export function parseQr(value: string): ConnectInfo | null {
@@ -94,7 +99,7 @@ export class StudioClient {
       clearTimeout(timeout)
       this.host = host
       this.ws = ws
-      ws.send(JSON.stringify({ t: 'hello', token: this.info.token, ...this.getHello() }))
+      ws.send(toJson({ t: 'hello', token: this.info.token, ...this.getHello() }))
       this.onState('connected', host)
     }
     ws.onmessage = (ev) => {
@@ -129,7 +134,7 @@ export class StudioClient {
   }
 
   send(msg: Record<string, unknown>) {
-    if (this.ws && this.ws.readyState === WebSocket.OPEN) this.ws.send(JSON.stringify(msg))
+    if (this.ws && this.ws.readyState === WebSocket.OPEN) this.ws.send(toJson(msg))
   }
 
   sendBinary(kind: number, jpeg: ArrayBuffer) {

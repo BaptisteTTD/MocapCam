@@ -251,7 +251,9 @@ class Studio:
             if pinger:
                 pinger.cancel()
             if cam is not None:
+                self.snapshot_cam(cam)
                 self.cams.pop(cam.id, None)
+                await self.check_take_complete()
                 await self.toast(f"Caméra déconnectée : {cam.name}", "warn")
                 self.changed()
         return ws
@@ -267,6 +269,7 @@ class Studio:
         elif t == "recording":
             cam.take.update(state="recording", called_at_pc=m["called_at"] - cam.offset,
                             started_at_pc=m["started_at"] - cam.offset)
+            self.snapshot_cam(cam)
             await self.maybe_chirp()
             self.changed()
         elif t == "recorded":
@@ -277,6 +280,7 @@ class Studio:
             self.changed()
         elif t == "uploaded":
             cam.take["state"] = "done"
+            self.snapshot_cam(cam)
             await self.check_take_complete()
             self.changed()
         elif t in ("upload_error", "error"):
@@ -404,15 +408,28 @@ class Studio:
 
     async def check_take_complete(self):
         tk = self.take
-        if not tk:
+        if not tk or tk["state"] != "stopping":
             return
         cams = [self.cams[i] for i in tk["cams"] if i in self.cams]
         if all(c.take.get("state") in ("done", "error") for c in cams):
             self.write_take_json()
-            ok = [c.name for c in cams if c.take.get("state") == "done"]
+            n = len([f for f in os.listdir(tk["dir"]) if f.lower().endswith((".mp4", ".mov"))])
             tk["state"] = "ready"
-            await self.toast(f"Prise {tk['name']} rapatriée ({len(ok)} vidéo(s))")
+            await self.toast(f"Prise {tk['name']} rapatriée ({n} vidéo(s))")
             self.changed()
+
+    def snapshot_cam(self, c):
+        """Mémorise l'état de la caméra pour la prise en cours (survit à une déconnexion)."""
+        tk = self.take
+        if not tk or c.take.get("name") != tk["name"]:
+            return
+        f = c.take.get("file")
+        tk.setdefault("meta", {})[c.name] = dict(
+            file=os.path.basename(f) if f and os.path.exists(f) else None,
+            started_at_pc=c.take.get("started_at_pc"), called_at_pc=c.take.get("called_at_pc"),
+            clock_offset_ms=c.offset, sync_rtt_ms=c.rtt, platform=c.platform, model=c.model,
+            fps=c.status.get("fps"), stabilization=c.status.get("stabilization"),
+            resolution=c.status.get("resolution"), exposure=c.status.get("exposure"), locked=c.locked)
 
     def write_take_json(self):
         tk = self.take
@@ -421,16 +438,14 @@ class Studio:
                     duration_s=round((tk.get("stopped_at_pc", now_ms()) - tk.get("at_pc", now_ms())) / 1000, 1),
                     cameras={})
         for cid in tk["cams"]:
-            c = self.cams.get(cid)
-            if c is None:
-                continue
-            f = c.take.get("file")
-            meta["cameras"][c.name] = dict(
-                file=os.path.basename(f) if f and os.path.exists(f) else None,
-                started_at_pc=c.take.get("started_at_pc"), called_at_pc=c.take.get("called_at_pc"),
-                clock_offset_ms=c.offset, sync_rtt_ms=c.rtt, platform=c.platform, model=c.model,
-                fps=c.status.get("fps"), stabilization=c.status.get("stabilization"),
-                exposure=c.status.get("exposure"), locked=c.locked)
+            if cid in self.cams:
+                self.snapshot_cam(self.cams[cid])
+        meta["cameras"] = dict(tk.get("meta", {}))
+        # vidéos présentes dans le dossier mais inconnues (caméra déconnectée trop tôt…)
+        for f in sorted(os.listdir(tk["dir"])):
+            n, ext = os.path.splitext(f)
+            if ext.lower() in (".mp4", ".mov") and not f.endswith(".part"):
+                meta["cameras"].setdefault(n, {})["file"] = f
         with open(os.path.join(tk["dir"], "take.json"), "w", encoding="utf-8") as fh:
             json.dump(meta, fh, indent=2, ensure_ascii=False)
 
@@ -451,6 +466,18 @@ class Studio:
                 f.write(chunk)
                 size += len(chunk)
         os.replace(tmp, path)
+        meta_path = os.path.join(d, "take.json")
+        if os.path.exists(meta_path) and not (self.take and self.take["name"] == take
+                                              and self.take["state"] != "ready"):
+            try:
+                with open(meta_path, encoding="utf-8") as fh:
+                    meta = json.load(fh)
+                meta.setdefault("cameras", {}).setdefault(cam_name, {})["file"] = os.path.basename(path)
+                with open(meta_path, "w", encoding="utf-8") as fh:
+                    json.dump(meta, fh, indent=2, ensure_ascii=False)
+                await self.toast(f"Vidéo de {cam_name} ajoutée à {take}")
+            except (OSError, ValueError):
+                pass
         for c in self.cams.values():
             if c.name == cam_name and c.take.get("name") == take:
                 c.take["file"] = path

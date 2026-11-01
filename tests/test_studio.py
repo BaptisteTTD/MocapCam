@@ -40,8 +40,9 @@ MLIST = [dict(m, position=[m["position"][0], m["position"][1], 0.01]) for m in p
 
 
 class FakePhone:
-    def __init__(self, name, ci, clock_offset_ms, net_ms):
+    def __init__(self, name, ci, clock_offset_ms, net_ms, crash_after_upload=False):
         self.name, self.ci = name, ci
+        self.crash_after_upload = crash_after_upload
         self.clock = clock_offset_ms
         self.net = net_ms
         R, t = ts.CAMS_TRUE[ci]
@@ -127,6 +128,10 @@ class FakePhone:
         await self.send(dict(t="upload", take=self.take, sent=len(data) // 2, total=len(data)))
         async with session.post(url, data=data) as r:
             assert r.status == 200, await r.text()
+        if self.crash_after_upload:
+            # comme l'app 1.0.2 sur iPhone : erreur juste après l'envoi -> déconnexion
+            await self.ws.close()
+            return
         await self.send(dict(t="uploaded", take=self.take))
 
     def make_video(self, dur, chirp_real_ms):
@@ -186,7 +191,7 @@ async def main():
                                            "window.playChirp=function(){window.onChirp();o&&o();};});")
                 await page.goto(BASE)
                 await page.wait_for_timeout(800)
-                phones = [FakePhone("iphone", 0, 123456.0, 15), FakePhone("poco", 1, -98765.0, 40)]
+                phones = [FakePhone("iphone", 0, 123456.0, 15, crash_after_upload=True), FakePhone("poco", 1, -98765.0, 40)]
                 tasks = [asyncio.create_task(ph.run(info, session, harness)) for ph in phones]
                 await page.wait_for_timeout(3500)
                 st = await ui_state(session)
@@ -229,8 +234,11 @@ async def main():
                 tdir = os.path.join(CAPT, take)
                 files = sorted(f for f in os.listdir(tdir) if f.endswith(".mp4"))
                 meta = json.load(open(os.path.join(tdir, "take.json"), encoding="utf-8"))
-                ok("rapatriement des vidéos + take.json", files == ["iphone.mp4", "poco.mp4"] and meta["chirp_at_pc"],
-                   f"{take} : {files}")
+                ok("rapatriement des vidéos + take.json (iPhone déconnecté juste après l'envoi)",
+                   files == ["iphone.mp4", "poco.mp4"] and meta["chirp_at_pc"]
+                   and sorted(meta["cameras"]) == ["iphone", "poco"]
+                   and meta["cameras"]["iphone"].get("started_at_pc"),
+                   f"{take} : {files}, caméras dans take.json : {sorted(meta['cameras'])}")
                 # écart de démarrage estimé (horloges) vs réel
                 est = {n: c["started_at_pc"] for n, c in meta["cameras"].items()}
                 real = {ph.name: ph.rec_start for ph in phones}
