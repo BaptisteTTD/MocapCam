@@ -150,7 +150,7 @@ def reset_blender():
     return bpy
 
 
-def make_ground_truth(T=300):
+def make_ground_truth(T=300, fps=60):
     bpy = reset_blender()
     import mocapcam_blender as mb
     from mathutils import Euler, Quaternion
@@ -184,7 +184,7 @@ def make_ground_truth(T=300):
             anim[f"{side}HandThumb{k}"] = lambda s, sg=sg: Euler((0.4 * math.sin(s), 0, -sg * 0.3 * (1 + math.sin(s))))
     X = np.full((T, 133, 3), np.nan)
     for f in range(T):
-        s = 2 * math.pi * f / 150.0
+        s = 2 * math.pi * (f * 60.0 / fps) / 150.0
         for bn, fn in anim.items():
             pb = arm.pose.bones[P + bn]
             pb.rotation_mode = "QUATERNION"
@@ -299,6 +299,41 @@ def test_reconstruction(X_gt):
     return path
 
 
+# --------------------------------------------------------------------------- 5b. cadences différentes
+
+def test_mixed_fps():
+    """iPhone 60 i/s, Poco 30 i/s, décalé d'une demi-image : interpolation vs images dupliquées."""
+    X120 = make_ground_truth(T=480, fps=120)       # vérité à 120 i/s (4 s)
+    X60 = X120[::2]
+    cams = [dict(K=K_TRUE[i], dist=DIST_TRUE[i], R=R, t=t) for i, (R, t) in enumerate(CAMS_TRUE)]
+    def obs(Xs, ci):
+        uv = project(np.nan_to_num(Xs), *CAMS_TRUE[ci], K_TRUE[ci], DIST_TRUE[ci]) + RNG.normal(0, 1.0, Xs.shape[:2] + (2,))
+        sc = np.where(np.isfinite(Xs[..., 0]), 0.9, 0.0).astype(np.float32)
+        return dict(kp=uv[:, None].astype(np.float32), sc=sc[:, None])
+    p0 = obs(X60, 0)                              # 60 i/s, référence
+    p1 = obs(X120[1::4], 1)                       # 30 i/s, démarre 1/120 s plus tard
+    d1 = -1 / 120
+    mlist = [dict(m, position=[m["position"][0], m["position"][1], 0.01]) for m in pipeline.DEFAULT_STUDIO["markers"]]
+    vol = mk.volume_box(mlist)
+    T = X60.shape[0]
+    valid = np.isfinite(X60[..., 0])
+    def err(X):
+        e = np.linalg.norm(X - X60, axis=-1)
+        m = valid & np.isfinite(e)
+        return np.median(e[m]) * 1000, np.percentile(e[m], 95) * 1000
+    # ancienne méthode : la vidéo à 30 i/s est dupliquée à 60 i/s, décalage arrondi à l'image
+    dup = dict(kp=np.repeat(p1["kp"], 2, 0)[:T], sc=np.repeat(p1["sc"], 2, 0)[:T])
+    Xa, _ = triangulate.reconstruct(cams, [p0, dup], [0.0, d1], 60, vol, log=lambda *a: None)
+    # nouvelle méthode : interpolation temporelle
+    r0 = triangulate.resample_pose(p0, 60, 60, 0.0, T)
+    r1 = triangulate.resample_pose(p1, 30, 60, d1, T)
+    Xb, _ = triangulate.reconstruct(cams, [r0, r1], [0.0, 0.0], 60, vol, log=lambda *a: None)
+    ea, eb = err(Xa), err(Xb)
+    ok("cadences mixtes 60 + 30 i/s", eb[0] < ea[0] and eb[0] < 8,
+       f"images dupliquées : médiane {ea[0]:.1f} mm (95 % < {ea[1]:.0f} mm) ; "
+       f"interpolation : médiane {eb[0]:.1f} mm (95 % < {eb[1]:.0f} mm)")
+
+
 # --------------------------------------------------------------------------- 6. Blender : application
 
 def test_blender(path, X_gt):
@@ -376,6 +411,7 @@ if __name__ == "__main__":
     test_sync()
     test_intrinsics()
     test_markers()
+    test_mixed_fps()
     X_gt = make_ground_truth()
     path = test_reconstruction(X_gt)
     test_blender(path, X_gt)

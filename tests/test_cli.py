@@ -32,7 +32,7 @@ run("init", studio)
 # pas de damier : les objectifs sont estimés automatiquement
 
 mlist = [dict(m, position=[m["position"][0], m["position"][1], 0.01]) for m in pipeline.DEFAULT_STUDIO["markers"]]
-sr, dur, fps = 48000, 5.0, 30
+sr, dur, fps = 48000, 5.0, 60
 shift_s = 2 / 60.0                         # même décalage que les données 2D de synthèse
 for ci, (cam, (R, t)) in enumerate(zip(("iphone", "poco"), ts.CAMS_TRUE)):
     raw = os.path.join(D, f"{cam}_raw.mp4")
@@ -61,7 +61,7 @@ work = os.path.join(take, "mocapcam")
 poses[1]["kp"] = np.concatenate([np.full_like(poses[1]["kp"][:2], np.nan), poses[1]["kp"]])
 poses[1]["sc"] = np.concatenate([np.zeros_like(poses[1]["sc"][:2]), poses[1]["sc"]])
 for cam, p in zip(("iphone", "poco"), poses):
-    np.savez_compressed(os.path.join(work, f"pose2d_{cam}.npz"), kp=p["kp"], sc=p["sc"], width=ts.W, height=ts.H)
+    np.savez_compressed(os.path.join(work, f"pose2d_{cam}_60.npz"), kp=p["kp"], sc=p["sc"], width=ts.W, height=ts.H)
 out = run("traiter", studio, take)
 res = os.path.join(take, "prise1.mocap.json")
 assert os.path.exists(res)

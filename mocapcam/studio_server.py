@@ -91,6 +91,8 @@ class Cam:
             stabilization=st.get("stabilization"), exposure=st.get("exposure"),
             recording=st.get("recording", False), locked=st.get("locked", self.locked),
             snapshot_size=st.get("snapshot_size"), device=st.get("device"),
+            device_type=st.get("device_type"), resolution=st.get("resolution"),
+            res720=st.get("res720"), supports60=st.get("supports60"),
             sync_ms=None if np.isnan(self.rtt) else round(self.rtt / 2, 1),
             preview_ts=self.preview_ts, check=self.check, take=self.take,
         )
@@ -113,6 +115,8 @@ class Studio:
         self._n = 0
         self._dirty = asyncio.Event()
         self.chirp_wav = None
+        self.prefer60 = True        # priorité à 60 i/s (720p si le téléphone l'exige)
+        self.preview_fps = 3.0
 
     # ------------------------------------------------------------------ état -> interface
     def takes_list(self):
@@ -149,6 +153,7 @@ class Studio:
             processing=None if self.proc is None else dict(take=self.proc["take"], running=self.proc["running"],
                                                           ok=self.proc.get("ok")),
             qr=self.qr_payload(), now=now_ms(), studio=self.studio_dir, captures=self.captures_dir,
+            prefer60=self.prefer60, preview_fps=self.preview_fps,
         )
 
     def qr_payload(self):
@@ -233,7 +238,8 @@ class Studio:
                         cam = Cam(id=cid, ws=ws, name=self.unique_name(m.get("name", "camera")),
                                   platform=m.get("platform", ""), model=m.get("model", ""))
                         self.cams[cid] = cam
-                        await self.send(cam, dict(t="welcome", id=cid, name=cam.name))
+                        await self.send(cam, dict(t="welcome", id=cid, name=cam.name,
+                                                  prefer60=self.prefer60, preview=self.preview_fps))
                         pinger = asyncio.create_task(self.ping_loop(cam))
                         await self.toast(f"Caméra connectée : {cam.name}")
                         self.changed()
@@ -528,8 +534,15 @@ class Studio:
         elif a == "kick" and m.get("cam") in self.cams:
             await self.cams[m["cam"]].ws.close()
         elif a == "preview":
+            self.preview_fps = float(m.get("fps", 3))
             for c in cams:
-                await self.send(c, dict(t="preview", fps=float(m.get("fps", 3))))
+                await self.send(c, dict(t="preview", fps=self.preview_fps))
+            self.changed()
+        elif a == "prefer60":
+            self.prefer60 = bool(m.get("value"))
+            for c in cams:
+                await self.send(c, dict(t="config", prefer60=self.prefer60))
+            self.changed()
         elif a == "process":
             asyncio.ensure_future(self.process(m.get("take")))
         elif a == "open":

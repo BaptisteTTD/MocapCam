@@ -188,13 +188,19 @@ def process_take(studio_dir, take_dir, force=False, manual_delays=None, only_cal
     fps = cfg["fps"]
 
     log("1/6 Normalisation des vidéos (cadence fixe)…")
-    norm = {}
+    norm, cam_fps = {}, {}
     for n, p in raw.items():
-        norm[n] = video.normalize(p, os.path.join(work, f"norm_{n}.mp4"), fps,
+        # chaque vidéo garde sa cadence d'origine (30 ou 60 i/s…) : pas d'images dupliquées
+        cam_fps[n] = min(video.native_fps(p), 120)
+        norm[n] = video.normalize(p, os.path.join(work, f"norm_{n}_{cam_fps[n]}.mp4"), cam_fps[n],
                                   cfg["max_height"], force=force)
+    fps = max(cam_fps.values())          # base de temps commune = la plus rapide
+    log("  cadences : " + ", ".join(f"{n} {f} i/s" for n, f in cam_fps.items())
+        + (f" -> interpolées sur une base commune de {fps} i/s" if len(set(cam_fps.values())) > 1 else ""))
 
     log("2/6 Synchronisation par le son…")
     delays = compute_delays(norm, manual_delays, meta, log)
+    delays_s = list(delays)
 
     log("3/6 Calibration automatique par les boules au sol…")
     cams, vol = calibrate_extrinsics(cfg, studio_dir, norm, work, log)
@@ -205,8 +211,14 @@ def process_take(studio_dir, take_dir, force=False, manual_delays=None, only_cal
     log("4/6 Détection 2D corps + mains (long la première fois)…")
     poses = []
     for n, p in norm.items():
-        poses.append(pose2d.run_video(p, os.path.join(work, f"pose2d_{n}.npz"),
+        poses.append(pose2d.run_video(p, os.path.join(work, f"pose2d_{n}_{cam_fps[n]}.npz"),
                                       force=force, log=log, **cfg["pose"]))
+
+    # toutes les caméras ramenées sur la même base de temps (décalage sous-image inclus)
+    names = list(norm)
+    T = int(poses[0]["kp"].shape[0] / cam_fps[names[0]] * fps)
+    poses = [triangulate.resample_pose(p, cam_fps[n], fps, d, T) for p, n, d in zip(poses, names, delays)]
+    delays = [0.0] * len(poses)
 
     log("5/6 Affinage des caméras avec le corps de l'acteur, puis triangulation 3D…")
     cams, ac = autocalib.refine(cams, poses, delays, fps, vol, cfg["reconstruction"],
@@ -227,7 +239,8 @@ def process_take(studio_dir, take_dir, force=False, manual_delays=None, only_cal
     ok = np.isfinite(X[..., 0])
     stats["coverage_body"] = float(ok[:, :23].mean())
     stats["coverage_hands"] = float(ok[:, 91:].mean())
-    stats["delays_s"] = dict(zip(norm.keys(), delays))
+    stats["delays_s"] = dict(zip(norm.keys(), delays_s))
+    stats["camera_fps"] = cam_fps
     stats["autocalibration"] = ac
     name = os.path.basename(os.path.normpath(take_dir))
     out = export_motion(os.path.join(take_dir, f"{name}.mocap.json"), X, fps, cams, cfg, vol, stats)

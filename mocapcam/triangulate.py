@@ -214,3 +214,58 @@ def postprocess(X, fps, cfg=None):
     X = fill_gaps(X, max_gap=int(cfg.get("max_gap_s", 0.3) * fps))
     X = smooth(X, fps, cfg.get("cutoff_body_hz", 6.0), cfg.get("cutoff_hands_hz", 8.0))
     return X
+
+
+# ----------------------------------------------------------------------------- cadences différentes
+
+def _centroid(kp, sc, thr=0.3):
+    ok = (sc >= thr) & np.isfinite(kp[:, 0])
+    if ok.sum() < 3:
+        return None
+    return kp[ok].mean(0)
+
+
+def resample_pose(pose, fps_src, fps_dst, delay, T_dst, match_px=150.0):
+    """Ramène les points 2D d'une caméra sur la base de temps commune (fps_dst), en tenant
+    compte de son décalage (delay, s) : un événement au temps t de la référence apparaît au
+    temps t + delay dans cette caméra. Interpolation linéaire entre les deux images voisines
+    (avec appariement des personnes), donc synchro plus fine qu'une image et cadences mixtes
+    (ex. 30 et 60 i/s) gérées sans dupliquer d'images."""
+    kp, sc = pose["kp"], pose["sc"]
+    Ts, P = kp.shape[:2]
+    out_kp = np.full((T_dst,) + kp.shape[1:], np.nan, np.float32)
+    out_sc = np.zeros((T_dst,) + sc.shape[1:], np.float32)
+    s = (np.arange(T_dst) / fps_dst + delay) * fps_src
+    a = np.floor(s).astype(int)
+    w = s - a
+    for i in np.where((a >= 0) & (a < Ts))[0]:
+        ai, wi = a[i], float(w[i])
+        bi = min(ai + 1, Ts - 1)
+        if bi == ai or wi < 0.02 or wi > 0.98:
+            k = bi if wi > 0.98 else ai
+            out_kp[i], out_sc[i] = kp[k], sc[k]
+            continue
+        used = set()
+        for p in range(P):
+            if not np.nanmax(sc[ai, p]) > 0:
+                continue
+            ca = _centroid(kp[ai, p], sc[ai, p])
+            best, bd = None, match_px
+            if ca is not None:
+                for q in range(P):
+                    if q in used or not np.nanmax(sc[bi, q]) > 0:
+                        continue
+                    cb = _centroid(kp[bi, q], sc[bi, q])
+                    if cb is not None and np.linalg.norm(cb - ca) < bd:
+                        best, bd = q, np.linalg.norm(cb - ca)
+            if best is None:          # pas de correspondance : image la plus proche
+                out_kp[i, p], out_sc[i, p] = kp[ai, p], sc[ai, p]
+                continue
+            used.add(best)
+            ka, kb = kp[ai, p], kp[bi, best]
+            sa, sb = sc[ai, p], sc[bi, best]
+            both = (sa > 0) & (sb > 0) & np.isfinite(ka[:, 0]) & np.isfinite(kb[:, 0])
+            near_k, near_s = (ka, sa) if wi < 0.5 else (kb, sb)
+            out_kp[i, p] = np.where(both[:, None], (1 - wi) * ka + wi * kb, near_k)
+            out_sc[i, p] = np.where(both, np.minimum(sa, sb), near_s * (np.abs(wi - 0.5) > 0.25))
+    return dict(kp=out_kp, sc=out_sc, width=pose.get("width"), height=pose.get("height"))

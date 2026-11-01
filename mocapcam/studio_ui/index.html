@@ -97,6 +97,7 @@
         <button onclick="send({a:'unlock'})" style="flex:1">Auto</button>
       </div>
       <label><input type="checkbox" id="fast" checked> obturation rapide 1/500 s (iPhone, réduit le flou)</label>
+      <label title="Si un téléphone ne fait pas 60 i/s en 1080p, il passe en 720p pour garder 60 i/s"><input type="checkbox" id="p60" onchange="send({a:'prefer60', value:this.checked})" checked> priorité à 60 i/s (720p si nécessaire)</label>
       <label>Aperçu
         <select id="pfps" onchange="send({a:'preview', fps: +this.value})">
           <option value="0">coupé</option><option value="1">1 i/s</option><option value="3" selected>3 i/s</option><option value="6">6 i/s</option>
@@ -153,6 +154,7 @@ function playChirp() {
 }
 document.addEventListener('click', () => { actx = actx || new AudioContext(); actx.resume(); }, { once: true });
 
+function fmtRes(r) { if (!r || !r.width) return '?'; const w = Math.max(r.width, r.height), h = Math.min(r.width, r.height); return `${w}×${h}`; }
 function fmtBytes(b) { if (b == null) return '?'; return b > 1e9 ? (b / 1e9).toFixed(1) + ' Go' : (b / 1e6).toFixed(0) + ' Mo'; }
 function syncClass(ms) { return ms == null ? '' : ms < 30 ? 'good' : ms < 100 ? 'mid' : 'bad'; }
 
@@ -180,6 +182,7 @@ function camCard(c) {
     <div class="meta">
       <span>${esc(c.platform)} ${esc(c.device || c.model || '')}</span>
       <span>i/s <b class="${fpsCls}">${c.fps ?? '?'}</b></span>
+      <span>format <b class="${c.res720 ? 'mid' : ''}">${fmtRes(c.resolution)}</b></span>
       <span>stabilisation <b class="${stabCls}">${esc(c.stabilization ?? '?')}</b></span>
       <span title="précision de la mise à l'heure ; la synchro finale se fait au bip, à moins d'1 ms">horloge <b class="${syncClass(c.sync_ms)}">${c.sync_ms != null ? '±' + c.sync_ms + ' ms' : '…'}</b></span>
       <span>batterie <b class="${batCls}">${bat}</b></span>
@@ -217,9 +220,11 @@ let lastGridKey = '';
 function render() {
   const cams = S.cams;
   // grille : on ne reconstruit pas les images à chaque mise à jour
-  const key = JSON.stringify(cams.map(c => [c.id, c.name, c.fps, c.stabilization, c.sync_ms, Math.round((c.battery||0)*100), c.recording, c.locked, c.check, c.take, c.exposure && Math.round(1/(c.exposure.duration||1)), c.preview_ts ? 1 : 0, c.storage_free && Math.round(c.storage_free/1e8)])) + S.qr.token;
+  const key = JSON.stringify(cams.map(c => [c.id, c.name, c.fps, c.resolution, c.res720, c.stabilization, c.sync_ms, Math.round((c.battery||0)*100), c.recording, c.locked, c.check, c.take, c.exposure && Math.round(1/(c.exposure.duration||1)), c.preview_ts ? 1 : 0, c.storage_free && Math.round(c.storage_free/1e8)])) + S.qr.token;
   if (key !== lastGridKey) { lastGridKey = key; $('grid').innerHTML = cams.map(camCard).join('') + addCard(); }
 
+  if (document.activeElement !== $('p60')) $('p60').checked = !!S.prefer60;
+  if (document.activeElement !== $('pfps')) $('pfps').value = String(S.preview_fps);
   $('chipCams').textContent = `${cams.length} caméra${cams.length > 1 ? 's' : ''}`;
   $('chipCams').className = 'chip ' + (cams.length >= 2 ? 'ok' : cams.length ? 'warn' : 'err');
   const worst = Math.max(...cams.map(c => c.sync_ms ?? 999), 0);

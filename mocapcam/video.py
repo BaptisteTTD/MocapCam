@@ -73,6 +73,26 @@ def iter_frames(path, step=1):
     cap.release()
 
 
+STANDARD_FPS = (24, 25, 30, 48, 50, 60, 90, 100, 120, 240)
+
+
+def native_fps(path):
+    """Cadence moyenne de la vidéo d'origine, arrondie à une cadence standard
+    (les téléphones filment en cadence légèrement variable : 59,94 -> 60, 29,8 -> 30)."""
+    import cv2
+    cap = cv2.VideoCapture(path)
+    fps = float(cap.get(cv2.CAP_PROP_FPS) or 0)
+    n = float(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
+    cap.set(cv2.CAP_PROP_POS_AVI_RATIO, 1)
+    dur = float(cap.get(cv2.CAP_PROP_POS_MSEC) or 0) / 1000
+    cap.release()
+    if dur > 1 and n > 10:
+        fps = n / dur if not fps or abs(n / dur - fps) / fps > 0.1 else fps
+    if not fps or not np.isfinite(fps):
+        return 30
+    return min(STANDARD_FPS, key=lambda s: abs(s - fps))
+
+
 def median_frame(path, n=25):
     """Image médiane sur n images réparties : fait disparaître la personne
     qui bouge, il ne reste que le décor (et les boules au sol)."""

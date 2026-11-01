@@ -19,9 +19,11 @@ import {
   CommonResolutions,
   isScannedCode,
   useCameraDevice,
+  useCameraDevices,
   useCameraPermission,
   useMicrophonePermission,
   useObjectOutput,
+  usePhotoOutput,
   useVideoOutput,
   type CameraRef,
   type CameraSessionConfig,
@@ -32,9 +34,10 @@ import {
 } from 'react-native-vision-camera'
 import { parseQr, StudioClient, type ConnectInfo, type ConnState, type StudioCommand } from './src/studio'
 import { decodeQr } from './src/qr'
+import type { Image } from 'react-native-nitro-image'
 import { cleanName, loadSettings, saveSettings, type Settings } from './src/settings'
 
-const APP_VERSION = '1.0.1'
+const APP_VERSION = '1.0.2'
 
 // Erreurs hors affichage (minuteries, callbacks natifs) : on les montre à l'écran
 // au lieu de laisser l'app se fermer.
@@ -306,12 +309,43 @@ function CaptureScreen({
   onDisconnect: () => void
 }) {
   useKeepAwake()
-  const device = useCameraDevice('back', { physicalDevices: ['wide-angle'] })
+  // Objectif principal (×1) seul : sur iPhone, la caméra « par défaut » peut être une
+  // caméra virtuelle (LiDAR + grand-angle, double…), qu'on évite.
+  const defaultBack = useCameraDevice('back')
+  const allDevices = useCameraDevices()
+  const device = useMemo(() => {
+    if (Platform.OS !== 'ios') return defaultBack
+    const back = allDevices.filter((d) => d.position === 'back')
+    return (
+      back.find((d) => d.type === 'wide-angle' && !d.isVirtualDevice) ??
+      back.find((d) => d.type === 'wide-angle') ??
+      defaultBack
+    )
+  }, [allDevices, defaultBack])
+
+  // 1080p par défaut ; si le téléphone refuse 60 i/s en 1080p et que le PC demande
+  // la priorité à la cadence, on essaie le 720p.
+  const [res720, setRes720] = useState(false)
+  const prefer60 = useRef(true)
+  const tried720 = useRef(false)
   const videoOutput = useVideoOutput({
-    targetResolution: CommonResolutions.FHD_16_9,
+    targetResolution: res720 ? CommonResolutions.HD_16_9 : CommonResolutions.FHD_16_9,
     enableAudio: true,
     fileType: 'mp4',
   })
+  // iPhone : l'aperçu ne peut pas être capturé, on prend de petites photos silencieuses
+  const photoOutput = usePhotoOutput({
+    targetResolution: CommonResolutions.FHD_16_9,
+    containerFormat: 'jpeg',
+    quality: 0.8,
+    qualityPrioritization: 'balanced',
+  })
+  const liveRef = useRef({ device, videoOutput, res720 })
+  liveRef.current = { device, videoOutput, res720 }
+  const outputs = useMemo(
+    () => (Platform.OS === 'ios' ? [videoOutput, photoOutput] : [videoOutput]),
+    [videoOutput, photoOutput],
+  )
   const constraints = useMemo<Constraint[]>(
     () => [
       { fps: 60 },
@@ -499,6 +533,19 @@ function CaptureScreen({
     clientRef.current?.send({ t: 'locked', ok: false })
   }, [])
 
+  const applyPrefer60 = useCallback(
+    (v: boolean) => {
+      prefer60.current = v
+      if (recorderRef.current?.isRecording) return
+      if (!v && res720) setRes720(false)
+      if (v && !res720 && (camStatusRef.current.fps ?? 60) < 50) {
+        tried720.current = true
+        setRes720(true)
+      }
+    },
+    [res720],
+  )
+
   // ---------------------------------------------------------------- images vers le PC
   const sendSnapshot = useCallback(async (kind: 1 | 2) => {
     const ref = cameraRef.current
@@ -506,12 +553,22 @@ function CaptureScreen({
     if (!ref || !client || busySnap.current) return
     busySnap.current = true
     try {
-      let img = await ref.takeSnapshot()
-      lastSnapSize.current = { w: img.width, h: img.height }
-      if (kind === 1) {
-        const scale = 640 / Math.max(img.width, img.height)
-        img = await img.resizeAsync(Math.round(img.width * scale), Math.round(img.height * scale))
+      let img: Image
+      if (Platform.OS === 'ios') {
+        const photo = await photoOutput.capturePhoto({ enableShutterSound: false, flashMode: 'off' }, {})
+        try {
+          img = await photo.toImageAsync()
+        } finally {
+          photo.dispose()
+        }
+      } else {
+        img = await ref.takeSnapshot()
       }
+      lastSnapSize.current = { w: img.width, h: img.height }
+      // le redimensionnement applique aussi l'orientation (images toujours « à l'endroit »)
+      const maxSide = kind === 1 ? 640 : 1920
+      const scale = Math.min(1, maxSide / Math.max(img.width, img.height))
+      img = await img.resizeAsync(Math.round(img.width * scale), Math.round(img.height * scale))
       const enc = await img.toEncodedImageDataAsync('jpg', kind === 1 ? 55 : 92)
       client.sendBinary(kind, enc.buffer)
     } catch {
@@ -519,7 +576,7 @@ function CaptureScreen({
     } finally {
       busySnap.current = false
     }
-  }, [])
+  }, [photoOutput])
 
   // ---------------------------------------------------------------- commandes du PC
   const onCommand = useCallback(
@@ -527,6 +584,8 @@ function CaptureScreen({
       switch (cmd.t) {
         case 'welcome':
           if (cmd.name && cmd.name !== nameRef.current) onSettings({ ...settings, name: cmd.name })
+          if (typeof cmd.prefer60 === 'boolean') applyPrefer60(cmd.prefer60)
+          if (typeof cmd.preview === 'number') previewFps.current = cmd.preview
           break
         case 'arm':
           void arm()
@@ -549,6 +608,10 @@ function CaptureScreen({
         case 'preview':
           previewFps.current = cmd.fps
           break
+        case 'config':
+          if (typeof cmd.prefer60 === 'boolean') applyPrefer60(cmd.prefer60)
+          if (typeof cmd.preview === 'number') previewFps.current = cmd.preview
+          break
         case 'identify':
           setIdentify(true)
           setTimeout(() => setIdentify(false), 3000)
@@ -561,7 +624,7 @@ function CaptureScreen({
           break
       }
     },
-    [arm, startAt, stop, lock, unlock, sendSnapshot, onSettings, settings],
+    [arm, startAt, stop, lock, unlock, sendSnapshot, onSettings, settings, applyPrefer60],
   )
   const onCommandRef = useRef(onCommand)
   onCommandRef.current = onCommand
@@ -625,7 +688,17 @@ function CaptureScreen({
         recording: !!rec?.isRecording,
         recorded_duration: rec?.isRecording ? rec.recordedDuration : 0,
         take: rec?.isRecording ? takeRef.current : null,
-        device: c?.device.localizedName ?? null,
+        device: c?.device.localizedName ?? liveRef.current.device?.localizedName ?? null,
+        device_type: liveRef.current.device?.type ?? null,
+        resolution: liveRef.current.videoOutput.currentResolution ?? null,
+        res720: liveRef.current.res720,
+        supports60: (() => {
+          try {
+            return liveRef.current.device ? liveRef.current.device.supportsFPS(60) : null
+          } catch {
+            return null
+          }
+        })(),
       })
       } catch (e) {
         client.send({ t: 'error', message: `état : ${String(e)}` })
@@ -639,7 +712,8 @@ function CaptureScreen({
     let alive = true
     const loop = async () => {
       while (alive) {
-        const fps = recorderRef.current?.isRecording ? Math.min(previewFps.current, 1) : previewFps.current
+        const rec = !!recorderRef.current?.isRecording
+        const fps = rec ? (Platform.OS === 'ios' ? 0 : Math.min(previewFps.current, 1)) : previewFps.current
         if (fps > 0 && clientRef.current?.baseUrl) await sendSnapshot(1)
         await new Promise((r) => setTimeout(r, fps > 0 ? 1000 / fps : 500))
       }
@@ -650,13 +724,26 @@ function CaptureScreen({
     }
   }, [sendSnapshot])
 
-  const onConfig = useCallback((c: CameraSessionConfig) => {
-    setCamStatus({
-      fps: c.selectedFPS,
-      stabilization: c.selectedVideoStabilizationMode,
-      binned: c.isBinned,
-    })
-  }, [])
+  const onConfig = useCallback(
+    (c: CameraSessionConfig) => {
+      setCamStatus({
+        fps: c.selectedFPS,
+        stabilization: c.selectedVideoStabilizationMode,
+        binned: c.isBinned,
+      })
+      if (recorderRef.current?.isRecording) return
+      const fps = c.selectedFPS ?? 0
+      if (fps > 0 && fps < 50 && prefer60.current && !res720 && !tried720.current) {
+        tried720.current = true
+        setRes720(true)
+      } else if (fps > 0 && fps < 50 && res720) {
+        setRes720(false) // le 720p ne donne pas mieux : retour au 1080p
+      }
+    },
+    [res720],
+  )
+
+
 
   const onLayout = (e: LayoutChangeEvent) => {
     viewSize.current = { width: e.nativeEvent.layout.width, height: e.nativeEvent.layout.height }
@@ -674,7 +761,7 @@ function CaptureScreen({
           style={StyleSheet.absoluteFill}
           device={device}
           isActive
-          outputs={[videoOutput]}
+          outputs={outputs}
           constraints={constraints}
           orientationSource="interface"
           onSessionConfigSelected={onConfig}

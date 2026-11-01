@@ -2,7 +2,7 @@
   "expo": {
     "name": "MocapCam",
     "slug": "mocapcam-phone",
-    "version": "1.0.1",
+    "version": "1.0.2",
     "orientation": "landscape",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "dark",
@@ -20,7 +20,7 @@
         "UIRequiresFullScreen": true,
         "ITSAppUsesNonExemptEncryption": false
       },
-      "buildNumber": "2"
+      "buildNumber": "3"
     },
     "android": {
       "package": "com.mocapcam.phone",
@@ -36,7 +36,7 @@
         "monochromeImage": "./assets/android-icon-monochrome.png"
       },
       "predictiveBackGestureEnabled": false,
-      "versionCode": 2
+      "versionCode": 3
     },
     "plugins": [
       [
