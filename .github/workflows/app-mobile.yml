@@ -1,3 +1,8 @@
+# Compile l'app MocapCam pour les téléphones, sur les serveurs de GitHub.
+# Lancement : onglet "Actions" du dépôt > "App mobile MocapCam" > "Run workflow".
+# Résultat : en bas de la page du lancement, rubrique "Artifacts" :
+#   - MocapCam-android : MocapCam.apk à installer sur le téléphone Android
+#   - MocapCam-iphone  : MocapCam-non-signee.ipa à installer avec Sideloadly (Apple ID gratuit)
 name: App mobile MocapCam
 
 on:

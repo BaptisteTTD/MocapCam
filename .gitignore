@@ -1,0 +1,17 @@
+# Python
+.venv/
+__pycache__/
+*.pyc
+
+# Données locales (vidéos, calculs)
+captures/
+studio/intrinseques/_norm_*
+*.mp4
+*.mov
+*.npz
+
+# App mobile
+mobile/MocapCamPhone/node_modules/
+mobile/MocapCamPhone/android/
+mobile/MocapCamPhone/ios/
+mobile/MocapCamPhone/.expo/

@@ -1,0 +1,81 @@
+# Compile l'app MocapCam pour les téléphones, sur les serveurs de GitHub.
+# Lancement : onglet "Actions" du dépôt > "App mobile MocapCam" > "Run workflow".
+# Résultat : en bas de la page du lancement, rubrique "Artifacts" :
+#   - MocapCam-android : MocapCam.apk à installer sur le téléphone Android
+#   - MocapCam-iphone  : MocapCam-non-signee.ipa à installer avec Sideloadly (Apple ID gratuit)
+name: App mobile MocapCam
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - "mobile/MocapCamPhone/**"
+      - ".github/workflows/app-mobile.yml"
+
+defaults:
+  run:
+    working-directory: mobile/MocapCamPhone
+
+jobs:
+  android:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: mobile/MocapCamPhone/package-lock.json
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+      - run: npm ci
+      - run: npx expo prebuild --platform android --no-install
+        env:
+          CI: 1
+      - name: Compilation APK
+        working-directory: mobile/MocapCamPhone/android
+        run: ./gradlew assembleRelease --no-daemon
+      - run: cp android/app/build/outputs/apk/release/app-release.apk MocapCam.apk
+      - uses: actions/upload-artifact@v4
+        with:
+          name: MocapCam-android
+          path: mobile/MocapCamPhone/MocapCam.apk
+
+  iphone:
+    runs-on: macos-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: mobile/MocapCamPhone/package-lock.json
+      - run: xcodebuild -version
+      - run: npm ci
+      - run: npx expo prebuild --platform ios --no-install
+        env:
+          CI: 1
+      - name: Pods
+        working-directory: mobile/MocapCamPhone/ios
+        run: pod install
+      - name: Compilation (sans signature, Sideloadly signera avec votre Apple ID)
+        working-directory: mobile/MocapCamPhone/ios
+        run: |
+          set -o pipefail
+          xcodebuild -workspace MocapCam.xcworkspace -scheme MocapCam \
+            -configuration Release -sdk iphoneos -destination "generic/platform=iOS" \
+            -archivePath "$PWD/build/MocapCam.xcarchive" archive \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" | tail -n 80
+      - name: Création de l'IPA
+        run: |
+          mkdir -p Payload
+          cp -R ios/build/MocapCam.xcarchive/Products/Applications/MocapCam.app Payload/
+          zip -qr MocapCam-non-signee.ipa Payload
+      - uses: actions/upload-artifact@v4
+        with:
+          name: MocapCam-iphone
+          path: mobile/MocapCamPhone/MocapCam-non-signee.ipa
