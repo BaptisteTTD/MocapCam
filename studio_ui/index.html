@@ -1,0 +1,266 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<title>MocapCam Studio</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  :root {
+    --bg: #0f1115; --panel: #171a21; --panel2: #1e222b; --line: #2a2f3a;
+    --text: #e8eaf0; --muted: #8b93a7; --accent: #4c8dff; --ok: #35c46a; --warn: #f0a92e; --err: #ff5a5a;
+    --rec: #ff3b30;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.4 "Segoe UI", system-ui, sans-serif; }
+  header { display: flex; align-items: center; gap: 16px; padding: 12px 20px; border-bottom: 1px solid var(--line); background: var(--panel); }
+  header h1 { font-size: 18px; margin: 0; font-weight: 650; letter-spacing: .2px; }
+  .chip { padding: 3px 10px; border-radius: 99px; background: var(--panel2); color: var(--muted); font-size: 12px; }
+  .chip.ok { color: var(--ok); } .chip.warn { color: var(--warn); } .chip.err { color: var(--err); }
+  main { display: grid; grid-template-columns: 1fr 380px; gap: 16px; padding: 16px 20px; height: calc(100vh - 53px); }
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(420px, 1fr)); gap: 14px; align-content: start; overflow: auto; padding-bottom: 20px; }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; overflow: hidden; }
+  .card.recording { border-color: var(--rec); box-shadow: 0 0 0 1px var(--rec); }
+  .view { position: relative; aspect-ratio: 16/9; background: #000; display: flex; align-items: center; justify-content: center; }
+  .view img { width: 100%; height: 100%; object-fit: contain; }
+  .view .name { position: absolute; left: 10px; top: 8px; font-size: 18px; font-weight: 700; text-shadow: 0 1px 4px #000; }
+  .view .rec { position: absolute; right: 10px; top: 8px; color: var(--rec); font-weight: 700; display: none; }
+  .card.recording .rec { display: block; }
+  .view .nopreview { color: var(--muted); }
+  .meta { display: flex; flex-wrap: wrap; gap: 6px 14px; padding: 10px 12px 4px; color: var(--muted); font-size: 12.5px; }
+  .meta b { color: var(--text); font-weight: 600; }
+  .meta .bad { color: var(--err); } .meta .good { color: var(--ok); } .meta .mid { color: var(--warn); }
+  .actions { display: flex; gap: 6px; padding: 8px 12px 12px; flex-wrap: wrap; align-items: center; }
+  button { background: var(--panel2); color: var(--text); border: 1px solid var(--line); border-radius: 8px; padding: 6px 12px; font: inherit; cursor: pointer; }
+  button:hover { border-color: #3d4554; }
+  button:disabled { opacity: .45; cursor: default; }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
+  button.recbtn { background: var(--rec); border-color: var(--rec); color: #fff; font-weight: 700; font-size: 16px; padding: 12px; width: 100%; }
+  button.stopbtn { background: #fff; color: #000; font-weight: 700; font-size: 16px; padding: 12px; width: 100%; }
+  .check { font-size: 12.5px; padding: 0 12px 8px; }
+  .check a { color: var(--accent); cursor: pointer; }
+  .add { display: flex; gap: 16px; padding: 14px; align-items: center; }
+  .add img { width: 190px; height: 190px; background: #fff; border-radius: 8px; }
+  .add ol { margin: 6px 0 0; padding-left: 18px; color: var(--muted); }
+  .side { display: flex; flex-direction: column; gap: 14px; overflow: auto; }
+  .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 14px; }
+  .panel h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .8px; color: var(--muted); margin: 0 0 10px; font-weight: 600; }
+  label { display: flex; align-items: center; gap: 8px; color: var(--muted); margin: 6px 0; }
+  input[type=text] { background: var(--panel2); border: 1px solid var(--line); color: var(--text); border-radius: 8px; padding: 8px 10px; font: inherit; width: 100%; }
+  .row { display: flex; gap: 8px; align-items: center; }
+  .timer { font: 600 34px/1 "Cascadia Mono", Consolas, monospace; text-align: center; margin: 8px 0 12px; }
+  .timer.on { color: var(--rec); }
+  .progress { height: 6px; background: var(--panel2); border-radius: 3px; overflow: hidden; margin-top: 4px; }
+  .progress > div { height: 100%; background: var(--accent); }
+  .log { background: #0b0d11; border: 1px solid var(--line); border-radius: 8px; height: 220px; overflow: auto; padding: 8px; font: 12px/1.45 Consolas, monospace; white-space: pre-wrap; color: #c9d1e3; }
+  .takes { display: flex; flex-direction: column; gap: 6px; max-height: 260px; overflow: auto; }
+  .take { display: flex; align-items: center; gap: 8px; padding: 6px 8px; background: var(--panel2); border-radius: 8px; }
+  .take .n { font-weight: 600; flex: 1; }
+  .take .s { font-size: 12px; color: var(--muted); }
+  .take .done { color: var(--ok); }
+  .hint { color: var(--muted); font-size: 12.5px; margin: 6px 0 0; }
+  #toasts { position: fixed; bottom: 16px; left: 50%; transform: translateX(-50%); display: flex; flex-direction: column; gap: 6px; z-index: 10; }
+  .toast { background: #222836; border: 1px solid var(--line); padding: 8px 14px; border-radius: 8px; box-shadow: 0 6px 20px #0008; }
+  .toast.warn { border-color: var(--warn); } .toast.error { border-color: var(--err); }
+  #modal { position: fixed; inset: 0; background: #000c; display: none; align-items: center; justify-content: center; z-index: 20; }
+  #modal img { max-width: 92vw; max-height: 88vh; border-radius: 8px; }
+  #disc { position: fixed; inset: 0; background: #000b; display: none; align-items: center; justify-content: center; font-size: 18px; z-index: 30; }
+</style>
+</head>
+<body>
+<header>
+  <h1>MocapCam Studio</h1>
+  <span class="chip" id="chipCams">0 caméra</span>
+  <span class="chip" id="chipSync">horloges —</span>
+  <span class="chip" id="chipState">prêt</span>
+  <span style="flex:1"></span>
+  <button onclick="send({a:'open'})">Dossier des prises</button>
+</header>
+<main>
+  <section class="grid" id="grid"></section>
+  <aside class="side">
+    <div class="panel">
+      <h2>Prise</h2>
+      <input type="text" id="takeName" placeholder="prise_001">
+      <div class="timer" id="timer">00:00.0</div>
+      <div id="recArea"></div>
+      <div id="uploads"></div>
+      <p class="hint" id="recHint">Au départ, le PC émet un bip de synchronisation : gardez le son du PC allumé.</p>
+    </div>
+    <div class="panel">
+      <h2>Préparation</h2>
+      <div class="row">
+        <button onclick="send({a:'check'})" style="flex:1">Vérifier les boules</button>
+        <button onclick="identifyAll()" style="flex:1">Identifier</button>
+      </div>
+      <div class="row" style="margin-top:8px">
+        <button onclick="send({a:'lock', fast: document.getElementById('fast').checked})" style="flex:1">Bloquer l'exposition</button>
+        <button onclick="send({a:'unlock'})" style="flex:1">Auto</button>
+      </div>
+      <label><input type="checkbox" id="fast" checked> obturation rapide 1/500 s (iPhone, réduit le flou)</label>
+      <label>Aperçu
+        <select id="pfps" onchange="send({a:'preview', fps: +this.value})">
+          <option value="0">coupé</option><option value="1">1 i/s</option><option value="3" selected>3 i/s</option><option value="6">6 i/s</option>
+        </select>
+      </label>
+    </div>
+    <div class="panel">
+      <h2>Prises</h2>
+      <div class="takes" id="takes"></div>
+    </div>
+    <div class="panel">
+      <h2>Traitement</h2>
+      <div class="log" id="log">Les messages du traitement s'affichent ici.</div>
+    </div>
+  </aside>
+</main>
+<div id="toasts"></div>
+<div id="modal" onclick="this.style.display='none'"><img id="modalImg"></div>
+<div id="disc">Connexion à MocapCam Studio perdue… (la fenêtre noire du serveur est-elle ouverte ?)</div>
+
+<script>
+let ws, S = null, serverDelta = 0, takeTyped = false;
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+
+function connect() {
+  ws = new WebSocket(`ws://${location.host}/ws/ui`);
+  ws.onopen = () => { $('disc').style.display = 'none'; };
+  ws.onclose = () => { $('disc').style.display = 'flex'; setTimeout(connect, 1000); };
+  ws.onmessage = (ev) => {
+    const m = JSON.parse(ev.data);
+    if (m.type === 'state') { S = m; serverDelta = m.now - Date.now(); render(); }
+    else if (m.type === 'preview') { const img = document.querySelector(`img[data-prev="${m.cam}"]`); if (img) img.src = `/preview/${m.cam}?t=${m.ts}`; }
+    else if (m.type === 'log') { const l = $('log'); if (m.reset) l.textContent = ''; l.textContent += m.line + '\n'; l.scrollTop = l.scrollHeight; }
+    else if (m.type === 'toast') toast(m.msg, m.level);
+    else if (m.type === 'play_chirp') playChirp();
+  };
+}
+function send(o) { if (ws && ws.readyState === 1) ws.send(JSON.stringify(o)); }
+
+function toast(msg, level = 'info') {
+  const d = document.createElement('div'); d.className = 'toast ' + level; d.textContent = msg;
+  $('toasts').appendChild(d); setTimeout(() => d.remove(), 5000);
+}
+
+// même signal que mocapcam/sync.py (chirp 1500 -> 6000 Hz, 0,3 s, fenêtre de Hann)
+let actx;
+function playChirp() {
+  actx = actx || new AudioContext();
+  const sr = actx.sampleRate, n = Math.floor(0.3 * sr), f0 = 1500, f1 = 6000, k = (f1 - f0) / 0.3;
+  const buf = actx.createBuffer(1, n, sr), d = buf.getChannelData(0);
+  for (let i = 0; i < n; i++) { const t = i / sr; d[i] = 0.9 * Math.sin(2 * Math.PI * (f0 * t + 0.5 * k * t * t)) * (0.5 - 0.5 * Math.cos(2 * Math.PI * i / (n - 1))); }
+  const src = actx.createBufferSource(); src.buffer = buf; src.connect(actx.destination); src.start();
+}
+document.addEventListener('click', () => { actx = actx || new AudioContext(); actx.resume(); }, { once: true });
+
+function fmtBytes(b) { if (b == null) return '?'; return b > 1e9 ? (b / 1e9).toFixed(1) + ' Go' : (b / 1e6).toFixed(0) + ' Mo'; }
+function syncClass(ms) { return ms == null ? '' : ms < 30 ? 'good' : ms < 100 ? 'mid' : 'bad'; }
+
+function camCard(c) {
+  const ex = c.exposure || {};
+  const exTxt = ex.duration ? `1/${Math.round(1 / ex.duration)} s · ISO ${Math.round(ex.iso)}` : '—';
+  const bat = c.battery >= 0 ? Math.round(c.battery * 100) + ' %' : '?';
+  const batCls = c.battery >= 0 && c.battery < 0.2 ? 'bad' : '';
+  const fpsCls = c.fps && c.fps < 50 ? 'mid' : 'good';
+  const stabCls = c.stabilization && c.stabilization !== 'off' ? 'bad' : 'good';
+  let chk = '';
+  if (c.check) {
+    if (c.check.pending) chk = 'Vérification des boules…';
+    else if (c.check.ok) chk = `<span class="${c.check.seen >= 4 ? 'good' : 'bad'}">● ${c.check.seen}/${c.check.total} boules</span> · erreur ${c.check.rms} px · caméra à (${c.check.center.join(' ; ')}) m · <a onclick="showCheck('${c.id}')">voir l'image</a>`;
+    else chk = `<span class="bad">● ${esc(c.check.message || 'boules non trouvées')}</span> · <a onclick="showCheck('${c.id}')">voir l'image</a>`;
+  }
+  const tk = c.take || {};
+  let up = '';
+  if (tk.state === 'uploading' && tk.total) up = `<div class="progress"><div style="width:${(100 * tk.sent / tk.total).toFixed(0)}%"></div></div>`;
+  return `<div class="card ${c.recording ? 'recording' : ''}" id="card-${c.id}">
+    <div class="view">
+      ${c.preview_ts ? `<img data-prev="${c.id}" src="/preview/${c.id}?t=${c.preview_ts}">` : '<span class="nopreview">en attente de l\'image…</span>'}
+      <div class="name">${esc(c.name)}</div><div class="rec">● REC</div>
+    </div>
+    <div class="meta">
+      <span>${esc(c.platform)} ${esc(c.device || c.model || '')}</span>
+      <span>i/s <b class="${fpsCls}">${c.fps ?? '?'}</b></span>
+      <span>stabilisation <b class="${stabCls}">${esc(c.stabilization ?? '?')}</b></span>
+      <span title="précision de la mise à l'heure ; la synchro finale se fait au bip, à moins d'1 ms">horloge <b class="${syncClass(c.sync_ms)}">${c.sync_ms != null ? '±' + c.sync_ms + ' ms' : '…'}</b></span>
+      <span>batterie <b class="${batCls}">${bat}</b></span>
+      <span>libre <b>${fmtBytes(c.storage_free)}</b></span>
+      <span>expo <b>${exTxt}</b> ${c.locked ? '<b class="good">bloquée</b>' : ''}</span>
+    </div>
+    ${chk ? `<div class="check">${chk}</div>` : ''}
+    <div style="padding:0 12px">${up}</div>
+    <div class="actions">
+      <button onclick="send({a:'identify', cam:'${c.id}'})">Identifier</button>
+      <button onclick="rename('${c.id}','${esc(c.name)}')">Renommer</button>
+      <span style="flex:1"></span>
+      <span class="s" style="color:var(--muted)">${tk.state ? esc(stateFr(tk.state)) : ''}</span>
+      <button onclick="if(confirm('Déconnecter ${esc(c.name)} ?')) send({a:'kick', cam:'${c.id}'})">✕</button>
+    </div>
+  </div>`;
+}
+function stateFr(s) { return ({armed:'prêt', recording:'enregistre', uploading:'envoi de la vidéo', done:'vidéo reçue', error:'erreur'})[s] || s; }
+
+function addCard() {
+  const q = S.qr;
+  return `<div class="card"><div class="add">
+    <img src="/qr.svg?t=${q.token}" alt="QR code">
+    <div><b>Ajouter une caméra</b>
+      <ol><li>Ouvrez l'app <b>MocapCam</b> sur le téléphone</li>
+      <li>Donnez-lui un nom (iphone, poco…)</li>
+      <li>Scannez ce QR code</li></ol>
+      <p class="hint">Même réseau Wi-Fi que ce PC. Adresse : ${q.hosts.map(h => h + ':' + q.port).join(' ou ')}</p>
+      <button onclick="send({a:'new_qr'})">Nouveau QR code</button>
+    </div></div></div>`;
+}
+
+let lastGridKey = '';
+function render() {
+  const cams = S.cams;
+  // grille : on ne reconstruit pas les images à chaque mise à jour
+  const key = JSON.stringify(cams.map(c => [c.id, c.name, c.fps, c.stabilization, c.sync_ms, Math.round((c.battery||0)*100), c.recording, c.locked, c.check, c.take, c.exposure && Math.round(1/(c.exposure.duration||1)), c.preview_ts ? 1 : 0, c.storage_free && Math.round(c.storage_free/1e8)])) + S.qr.token;
+  if (key !== lastGridKey) { lastGridKey = key; $('grid').innerHTML = cams.map(camCard).join('') + addCard(); }
+
+  $('chipCams').textContent = `${cams.length} caméra${cams.length > 1 ? 's' : ''}`;
+  $('chipCams').className = 'chip ' + (cams.length >= 2 ? 'ok' : cams.length ? 'warn' : 'err');
+  const worst = Math.max(...cams.map(c => c.sync_ms ?? 999), 0);
+  $('chipSync').textContent = cams.length ? `horloges ±${worst === 999 ? '…' : worst} ms` : 'horloges —';
+  $('chipSync').className = 'chip ' + (worst < 30 ? 'ok' : worst < 100 ? 'warn' : 'err');
+
+  const tk = S.take, st = tk ? tk.state : 'idle';
+  const recording = st === 'starting' || st === 'recording';
+  $('chipState').textContent = ({idle:'prêt', starting:'démarrage…', recording:'● enregistrement', stopping:'arrêt, envoi des vidéos…', ready:'prise reçue'})[st] || st;
+  $('chipState').className = 'chip ' + (recording ? 'err' : st === 'stopping' ? 'warn' : 'ok');
+  if (tk && ['starting', 'recording', 'stopping'].includes(st)) $('takeName').value = tk.name;
+  else if (!takeTyped || !$('takeName').value) $('takeName').value = S.next_take;
+  $('takeName').disabled = recording || st === 'stopping';
+  $('recArea').innerHTML = recording
+    ? `<button class="stopbtn" onclick="send({a:'stop'})">■ Arrêter</button>`
+    : `<button class="recbtn" ${cams.length && st !== 'stopping' ? '' : 'disabled'} onclick="record()">● Enregistrer</button>`;
+  $('timer').className = 'timer' + (recording ? ' on' : '');
+
+  $('takes').innerHTML = S.takes.length ? S.takes.map(t => `<div class="take">
+      <span class="n">${esc(t.name)}</span>
+      <span class="s">${t.videos.length} vidéo${t.videos.length > 1 ? 's' : ''}${t.duration ? ' · ' + t.duration + ' s' : ''}</span>
+      ${t.processed ? '<span class="s done">✓ traitée</span>' : ''}
+      <button ${S.processing && S.processing.running || t.videos.length < 2 ? 'disabled' : ''} onclick="send({a:'process', take:'${esc(t.name)}'})">${t.processed ? 'Retraiter' : 'Traiter'}</button>
+      <button onclick="send({a:'open', take:'${esc(t.name)}'})">📁</button>
+    </div>`).join('') : '<p class="hint">Aucune prise pour l\'instant.</p>';
+}
+
+function record() { takeTyped = false; send({ a: 'record', take: $('takeName').value.trim() }); actx = actx || new AudioContext(); actx.resume(); }
+function rename(id, old) { const n = prompt('Nom de la caméra (sert de nom de fichier) :', old); if (n) send({ a: 'rename', cam: id, name: n }); }
+function identifyAll() { (S?.cams || []).forEach(c => send({ a: 'identify', cam: c.id })); }
+function showCheck(id) { $('modalImg').src = `/check/${id}?t=${Date.now()}`; $('modal').style.display = 'flex'; }
+$('takeName').addEventListener('input', () => takeTyped = true);
+
+setInterval(() => {
+  if (!S || !S.take || !S.take.at_pc || !['starting', 'recording'].includes(S.take.state)) {
+    if (!S || !S.take || S.take.state === 'ready') $('timer').textContent = '00:00.0';
+    return;
+  }
+  const t = Math.max(0, (Date.now() + serverDelta - S.take.at_pc) / 1000);
+  $('timer').textContent = `${String(Math.floor(t / 60)).padStart(2, '0')}:${(t % 60).toFixed(1).padStart(4, '0')}`;
+}, 100);
+connect();
+</script>
+</body>
+</html>
