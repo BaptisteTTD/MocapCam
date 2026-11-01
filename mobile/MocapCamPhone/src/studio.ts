@@ -31,8 +31,9 @@ export function parseQr(value: string): ConnectInfo | null {
   } catch {
     // pas du JSON : adresse saisie à la main "192.168.1.20:8765"
   }
-  const m = /^\s*([\w.\-]+)(?::(\d+))?\s*$/.exec(value)
-  if (m) return { hosts: [m[1]], port: Number(m[2] ?? 8765), token: '' }
+  // saisie à la main : "192.168.1.20:8765 ab12cd34" (adresse + code affichés dans Studio)
+  const m = /^\s*([\w.\-]+)(?::(\d+))?(?:[\s,;]+([0-9a-fA-F]{4,16}))?\s*$/.exec(value)
+  if (m) return { hosts: [m[1]], port: Number(m[2] ?? 8765), token: (m[3] ?? '').toLowerCase() }
   return null
 }
 

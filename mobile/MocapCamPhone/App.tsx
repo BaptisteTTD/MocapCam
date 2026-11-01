@@ -31,14 +31,65 @@ import {
   type ScannedObjectType,
 } from 'react-native-vision-camera'
 import { parseQr, StudioClient, type ConnectInfo, type ConnState, type StudioCommand } from './src/studio'
+import { decodeQr } from './src/qr'
 import { cleanName, loadSettings, saveSettings, type Settings } from './src/settings'
 
-const APP_VERSION = '1.0.0'
+const APP_VERSION = '1.0.1'
+
+// Erreurs hors affichage (minuteries, callbacks natifs) : on les montre à l'écran
+// au lieu de laisser l'app se fermer.
+const errorListeners = new Set<(e: Error) => void>()
+const g = globalThis as any
+if (g.ErrorUtils?.setGlobalHandler) {
+  g.ErrorUtils.setGlobalHandler((e: Error) => {
+    if (errorListeners.size === 0) console.error(e)
+    errorListeners.forEach((l) => l(e))
+  })
+}
 const QR_TYPES: ScannedObjectType[] = ['qr']
 
 // ============================================================================ App
 
 export default function App() {
+  return (
+    <ErrorBoundary>
+      <AppInner />
+    </ErrorBoundary>
+  )
+}
+
+/** Affiche l'erreur à l'écran au lieu de fermer l'app (plus simple à diagnostiquer). */
+class ErrorBoundary extends React.Component<{ children: React.ReactNode }, { error: Error | null }> {
+  state = { error: null as Error | null }
+  static getDerivedStateFromError(error: Error) {
+    return { error }
+  }
+  private onGlobal = (error: Error) => this.setState({ error })
+  componentDidMount() {
+    errorListeners.add(this.onGlobal)
+  }
+  componentWillUnmount() {
+    errorListeners.delete(this.onGlobal)
+  }
+  render() {
+    if (this.state.error) {
+      return (
+        <View style={styles.center}>
+          <StatusBar hidden />
+          <Text style={styles.title}>MocapCam a rencontré une erreur</Text>
+          <Text style={[styles.text, { fontSize: 13 }]} selectable>
+            {String(this.state.error?.message ?? this.state.error)}
+          </Text>
+          <Text style={styles.small}>Faites une capture d'écran de ce message pour le diagnostic.</Text>
+          <Btn label="Réessayer" onPress={() => this.setState({ error: null })} />
+        </View>
+      )
+    }
+    return this.props.children
+  }
+}
+
+function AppInner() {
   const [settings, setSettings] = useState<Settings>(() => loadSettings())
   const [info, setInfo] = useState<ConnectInfo | null>(null)
   const cam = useCameraPermission()
@@ -101,25 +152,21 @@ function ConnectScreen({
 }) {
   const [manual, setManual] = useState('')
   const [scanning, setScanning] = useState(true)
+  const [manualError, setManualError] = useState<string | null>(null)
   const done = useRef(false)
 
-  const onScanned = useCallback(
-    (objects: ScannedObject[]) => {
+  const onCode = useCallback(
+    (value: string) => {
       if (done.current) return
-      for (const o of objects) {
-        if (isScannedCode(o) && o.value) {
-          const i = parseQr(o.value)
-          if (i && i.token) {
-            done.current = true
-            onConnect(i, o.value)
-            return
-          }
-        }
+      const i = parseQr(value)
+      if (i && i.token) {
+        done.current = true
+        setScanning(false)
+        onConnect(i, value)
       }
     },
     [onConnect],
   )
-  const objectOutput = useObjectOutput({ types: QR_TYPES, onObjectsScanned: onScanned })
   const lastInfo = settings.lastQr ? parseQr(settings.lastQr) : null
 
   return (
@@ -127,7 +174,7 @@ function ConnectScreen({
       <StatusBar hidden />
       <View style={styles.scanBox}>
         {scanning ? (
-          <Camera style={StyleSheet.absoluteFill} device="back" isActive outputs={[objectOutput]} />
+          Platform.OS === 'ios' ? <IosQrScanner onCode={onCode} /> : <SnapshotQrScanner onCode={onCode} />
         ) : null}
         <View style={styles.scanFrame} pointerEvents="none" />
         <Text style={styles.scanHint}>Visez le QR code affiché par MocapCam Studio sur le PC</Text>
@@ -153,10 +200,10 @@ function ConnectScreen({
             }}
           />
         ) : null}
-        <Text style={[styles.label, { marginTop: 16 }]}>Ou adresse du PC</Text>
+        <Text style={[styles.label, { marginTop: 16 }]}>Ou adresse et code affichés dans Studio</Text>
         <TextInput
           style={styles.input}
-          placeholder="192.168.1.20:8765"
+          placeholder="192.168.1.20:8765 ab12cd34"
           placeholderTextColor="#777"
           value={manual}
           autoCapitalize="none"
@@ -167,14 +214,75 @@ function ConnectScreen({
           label="Se connecter"
           onPress={() => {
             const i = parseQr(manual)
-            if (i) {
-              setScanning(false)
-              onConnect(i, manual)
+            if (!i || !i.token) {
+              setManualError('Format attendu : 192.168.1.20:8765 ab12cd34')
+              return
             }
+            done.current = true
+            setScanning(false)
+            onConnect(i, manual)
           }}
         />
+        {manualError ? <Text style={[styles.small, { color: '#ff8a80' }]}>{manualError}</Text> : null}
       </View>
     </View>
+  )
+}
+
+/** iPhone : lecteur de codes natif de VisionCamera. */
+function IosQrScanner({ onCode }: { onCode: (v: string) => void }) {
+  const onScanned = useCallback(
+    (objects: ScannedObject[]) => {
+      for (const o of objects) {
+        if (isScannedCode(o) && o.value) onCode(o.value)
+      }
+    },
+    [onCode],
+  )
+  const objectOutput = useObjectOutput({ types: QR_TYPES, onObjectsScanned: onScanned })
+  return <Camera style={StyleSheet.absoluteFill} device="back" isActive outputs={[objectOutput]} />
+}
+
+/** Android : VisionCamera n'y a pas de lecteur de codes, on décode les images de l'aperçu. */
+function SnapshotQrScanner({ onCode }: { onCode: (v: string) => void }) {
+  const ref = useRef<CameraRef>(null)
+  const [ready, setReady] = useState(false)
+  const onCodeRef = useRef(onCode)
+  onCodeRef.current = onCode
+  useEffect(() => {
+    if (!ready) return
+    let alive = true
+    const loop = async () => {
+      while (alive) {
+        try {
+          const cam = ref.current
+          if (cam) {
+            let img = await cam.takeSnapshot()
+            const scale = 800 / Math.max(img.width, img.height)
+            if (scale < 1) img = await img.resizeAsync(Math.round(img.width * scale), Math.round(img.height * scale))
+            const raw = await img.toRawPixelDataAsync()
+            const value = decodeQr(raw)
+            if (value && alive) onCodeRef.current(value)
+          }
+        } catch {
+          // aperçu pas encore prêt
+        }
+        await new Promise((r) => setTimeout(r, 200))
+      }
+    }
+    void loop()
+    return () => {
+      alive = false
+    }
+  }, [ready])
+  return (
+    <Camera
+      ref={ref}
+      style={StyleSheet.absoluteFill}
+      device="back"
+      isActive
+      onPreviewStarted={() => setReady(true)}
+    />
   )
 }
 
@@ -486,6 +594,7 @@ function CaptureScreen({
       setNow(Date.now())
       const client = clientRef.current
       if (!client) return
+      try {
       let battery = -1
       try {
         battery = await Battery.getBatteryLevelAsync()
@@ -498,7 +607,13 @@ function CaptureScreen({
         t: 'status',
         name: nameRef.current,
         battery,
-        storage_free: Paths.availableDiskSpace,
+        storage_free: (() => {
+          try {
+            return Paths.availableDiskSpace
+          } catch {
+            return null
+          }
+        })(),
         fps: camStatusRef.current.fps ?? null,
         stabilization: camStatusRef.current.stabilization ?? null,
         binned: camStatusRef.current.binned ?? null,
@@ -512,6 +627,9 @@ function CaptureScreen({
         take: rec?.isRecording ? takeRef.current : null,
         device: c?.device.localizedName ?? null,
       })
+      } catch (e) {
+        client.send({ t: 'error', message: `état : ${String(e)}` })
+      }
     }, 1000)
     return () => clearInterval(id)
   }, [])

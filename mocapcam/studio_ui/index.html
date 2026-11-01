@@ -207,7 +207,8 @@ function addCard() {
       <ol><li>Ouvrez l'app <b>MocapCam</b> sur le téléphone</li>
       <li>Donnez-lui un nom (iphone, poco…)</li>
       <li>Scannez ce QR code</li></ol>
-      <p class="hint">Même réseau Wi-Fi que ce PC. Adresse : ${q.hosts.map(h => h + ':' + q.port).join(' ou ')}</p>
+      <p class="hint">Même réseau Wi-Fi que ce PC. Sans QR code, tapez dans l'app :<br>
+        <b style="color:var(--text);font-family:Consolas,monospace">${q.hosts.map(h => h + ':' + q.port + ' ' + q.token).join('</b> ou <b style="color:var(--text);font-family:Consolas,monospace">')}</b></p>
       <button onclick="send({a:'new_qr'})">Nouveau QR code</button>
     </div></div></div>`;
 }
