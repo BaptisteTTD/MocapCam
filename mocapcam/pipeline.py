@@ -101,31 +101,38 @@ def compute_delays(norm_videos, manual=None, take_meta=None, log=print):
     manual = manual or {}
     audio = {n: video.read_audio(norm_videos[n]) for n in names}
 
-    # 1) prise lancée par MocapCam Studio : signal sonore (chirp) joué par le PC
-    if take_meta and take_meta.get("chirp_at_pc") and not manual:
-        cams = take_meta["cameras"]
-        ok, t_chirp, expected = True, {}, {}
+    # 1) prise lancée par MocapCam Studio : bips joués par le PC (départ, et arrêt)
+    chirps = (take_meta or {}).get("chirps_at_pc") or (
+        [take_meta["chirp_at_pc"]] if take_meta and take_meta.get("chirp_at_pc") else [])
+    if chirps and not manual:
+        offs = [(c - chirps[0]) / 1000.0 for c in chirps]
+        found = {}
         for n in names:
-            st = cams.get(n, {}).get("started_at_pc")
-            exp = (take_meta["chirp_at_pc"] - st) / 1000.0 if st is not None else None
-            expected[n] = exp
-            win = (exp - 1.0, exp + 1.5) if exp is not None else None
-            t, conf = sync.find_chirp(audio[n], search=win)
-            if t is None or conf < 6:
-                t, conf = sync.find_chirp(audio[n])   # recherche sur toute la piste
-            log(f"  {n} : signal sonore à {t if t is not None else float('nan'):.4f} s (confiance {conf:.0f})")
-            if t is None or conf < 6:
-                ok = False
-            t_chirp[n] = t
-        if ok:
-            delays = [t_chirp[n] - t_chirp[names[0]] for n in names]
-            for n, d in zip(names[1:], delays[1:]):
-                log(f"  {n} : décalage {d * 1000:+.1f} ms par rapport à {names[0]} (signal sonore)")
+            peaks = sync.find_chirps(audio[n], max_n=len(chirps) + 2)
+            found[n] = sync.match_chirps(peaks, offs)
+            desc = ", ".join(f"{t:.3f} s" for _, t in sorted(found[n].items())) or "aucun"
+            log(f"  {n} : bip(s) trouvé(s) à {desc}")
+        common = set.intersection(*(set(f) for f in found.values())) if found else set()
+        if common:
+            ks = sorted(common)
+            delays = []
+            for n in names:
+                d = [found[n][k] - found[names[0]][k] for k in ks]
+                delays.append(float(np.mean(d)))
+                if n != names[0]:
+                    drift = (d[-1] - d[0]) * 1000 if len(d) > 1 else None
+                    extra = f", dérive {drift:+.1f} ms entre les 2 bips" if drift is not None else ""
+                    log(f"  {n} : décalage {delays[-1] * 1000:+.1f} ms par rapport à {names[0]}"
+                        f" ({len(ks)} bip(s){extra})")
+                    if drift is not None and abs(drift) > 20:
+                        log("  ATTENTION : forte dérive entre les deux bips, vérifiez les cadences.")
             return delays
-        if all(expected[n] is not None for n in names):
-            log("  ATTENTION : signal sonore peu audible, synchro par les horloges des téléphones "
+        cams = take_meta.get("cameras", {})
+        st = {n: cams.get(n, {}).get("started_at_pc") for n in names}
+        if all(v is not None for v in st.values()):
+            log("  ATTENTION : bip peu audible, synchro par les horloges des téléphones "
                 "(précision ~1 image). Montez le volume du PC.")
-            return [expected[n] - expected[names[0]] for n in names]
+            return [-(st[n] - st[names[0]]) / 1000.0 for n in names]
 
     # 2) prise manuelle : clap au début
     delays = [0.0]

@@ -121,7 +121,7 @@ class FakePhone:
         dur = (self.rec_stop - self.rec_start) / 1000
         await self.send(dict(t="recorded", take=self.take, duration=dur, size=0))
         # vidéo : décor fixe + son avec le signal au moment où le PC l'a joué
-        path = await asyncio.get_running_loop().run_in_executor(None, self.make_video, dur, harness["chirp_real_ms"])
+        path = await asyncio.get_running_loop().run_in_executor(None, self.make_video, dur, list(harness["chirps"]))
         data = open(path, "rb").read()
         url = (f"http://{info['hosts'][0]}:{info['port']}/upload?token={info['token']}"
                f"&cam={self.name}&take={self.take}&ext=mp4")
@@ -134,7 +134,7 @@ class FakePhone:
             return
         await self.send(dict(t="uploaded", take=self.take))
 
-    def make_video(self, dur, chirp_real_ms):
+    def make_video(self, dur, chirps_real_ms):
         fps, sr = 30, 48000
         raw = os.path.join(D, f"{self.name}_raw.mp4")
         vw = cv2.VideoWriter(raw, cv2.VideoWriter_fourcc(*"mp4v"), fps, (1280, 720))
@@ -144,10 +144,12 @@ class FakePhone:
         vw.release()
         rng = np.random.default_rng(self.ci)
         a = rng.normal(0, 0.03, int(sr * dur)).astype(np.float32)
-        tc = (chirp_real_ms - self.rec_start) / 1000 + 0.004 * self.ci  # + trajet du son (~1,4 m)
         ch = sync.chirp_signal(sr) * 0.15
-        i = int(tc * sr)
-        a[i:i + ch.size] += ch[: max(0, a.size - i)]
+        for cr in chirps_real_ms:
+            tc = (cr - self.rec_start) / 1000 + 0.004 * self.ci  # + trajet du son (~1,4 m)
+            i = int(tc * sr)
+            if 0 <= i < a.size:
+                a[i:i + ch.size] += ch[: max(0, a.size - i)]
         wav = os.path.join(D, f"{self.name}.raw")
         (np.clip(a, -1, 1) * 32767).astype(np.int16).tofile(wav)
         out = os.path.join(D, f"{self.name}_final.mp4")
@@ -181,7 +183,7 @@ async def main():
                     await asyncio.sleep(0.2)
             info = st["qr"]
             info["hosts"] = ["127.0.0.1"]
-            harness = dict(chirp_real_ms=None)
+            harness = dict(chirps=[])
             async with async_playwright() as p:
                 browser = await p.chromium.launch(args=["--autoplay-policy=no-user-gesture-required"])
                 page = await browser.new_page(viewport=dict(width=1500, height=950))
@@ -217,7 +219,7 @@ async def main():
                     await page.wait_for_timeout(100)
                     if chirps:
                         break
-                harness["chirp_real_ms"] = chirps[0] if chirps else None
+                harness["chirps"] = chirps   # même liste : le bip d'arrêt s'y ajoutera
                 await page.wait_for_timeout(1500)
                 shot2 = os.path.join(D, "studio_enregistrement.png")
                 await page.screenshot(path=shot2)
@@ -269,7 +271,7 @@ async def main():
         delays = pipeline.compute_delays(norm, None, meta, log=logs.append)
         true_d = -(real["poco"] - real["iphone"]) / 1000 + 0.004
         e = abs(delays[1] - true_d) * 1000
-        ok("synchro précise par le signal sonore", e < 2,
+        ok(f"synchro précise par les bips ({len(meta.get('chirps_at_pc', []))} bips)", e < 2 and len(meta.get("chirps_at_pc", [])) == 2,
            f"décalage trouvé {delays[1] * 1000:.1f} ms, réel {true_d * 1000:.1f} ms (erreur {e:.2f} ms)")
         # étape « marqueurs » du traitement sur la prise Studio
         out = []

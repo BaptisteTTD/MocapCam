@@ -369,11 +369,20 @@ class Studio:
         if not force and not all(c.take.get("state") == "recording" for c in cams):
             return
         tk["state"] = "recording"
-        await asyncio.sleep(0.5)
-        tk["chirp_at_pc"] = now_ms()
+        # certains téléphones (Android) commencent réellement à filmer ~0,5 s après avoir
+        # annoncé le départ : on laisse de la marge avant le bip
+        await asyncio.sleep(1.2)
+        await self.chirp()
+        self.changed()
+
+    async def chirp(self):
+        tk = self.take
+        t = now_ms()
+        tk.setdefault("chirps_at_pc", []).append(t)
+        if not tk.get("chirp_at_pc"):
+            tk["chirp_at_pc"] = t
         if not self.play_chirp_local():
             await self.broadcast(dict(type="play_chirp"))   # joué par l'interface
-        self.changed()
 
     def play_chirp_local(self):
         """Joue le signal par les haut-parleurs (Windows). Sinon l'interface s'en charge."""
@@ -400,6 +409,11 @@ class Studio:
         if not tk or tk["state"] not in ("starting", "recording"):
             return
         tk["state"] = "stopping"
+        self.changed()
+        # second bip avant l'arrêt : synchro vérifiée deux fois + mesure de dérive
+        if tk.get("chirp_at_pc"):
+            await self.chirp()
+            await asyncio.sleep(0.9)
         tk["stopped_at_pc"] = now_ms()
         for cid in tk["cams"]:
             if cid in self.cams:
@@ -434,6 +448,7 @@ class Studio:
     def write_take_json(self):
         tk = self.take
         meta = dict(take=tk["name"], created=tk["created"], chirp_at_pc=tk.get("chirp_at_pc"),
+                    chirps_at_pc=tk.get("chirps_at_pc", []),
                     chirp=sync.CHIRP, at_pc=tk.get("at_pc"),
                     duration_s=round((tk.get("stopped_at_pc", now_ms()) - tk.get("at_pc", now_ms())) / 1000, 1),
                     cameras={})
