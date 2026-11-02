@@ -39,6 +39,7 @@
   button.stopbtn { background: #fff; color: #000; font-weight: 700; font-size: 16px; padding: 12px; width: 100%; }
   .check { font-size: 12.5px; padding: 0 12px 8px; }
   .check a { color: var(--accent); cursor: pointer; }
+  .check .good { color: var(--ok); } .check .bad { color: var(--err); } .warnc { color: var(--warn); }
   .add { display: flex; gap: 16px; padding: 14px; align-items: center; }
   .add img { width: 190px; height: 190px; background: #fff; border-radius: 8px; }
   .add ol { margin: 6px 0 0; padding-left: 18px; color: var(--muted); }
@@ -48,6 +49,7 @@
   label { display: flex; align-items: center; gap: 8px; color: var(--muted); margin: 6px 0; }
   input[type=text] { background: var(--panel2); border: 1px solid var(--line); color: var(--text); border-radius: 8px; padding: 8px 10px; font: inherit; width: 100%; }
   .row { display: flex; gap: 8px; align-items: center; }
+  input.num { background: var(--panel2); border: 1px solid var(--line); color: var(--text); border-radius: 8px; padding: 6px 8px; font: inherit; width: 76px; }
   .timer { font: 600 34px/1 "Cascadia Mono", Consolas, monospace; text-align: center; margin: 8px 0 12px; }
   .timer.on { color: var(--rec); }
   .progress { height: 6px; background: var(--panel2); border-radius: 3px; overflow: hidden; margin-top: 4px; }
@@ -99,6 +101,15 @@
       </div>
       <label><input type="checkbox" id="fast" checked> obturation rapide 1/500 s (iPhone, réduit le flou)</label>
       <label title="Si un téléphone ne fait pas 60 i/s en 1080p, il passe en 720p pour garder 60 i/s"><input type="checkbox" id="p60" onchange="send({a:'prefer60', value:this.checked})" checked> priorité à 60 i/s (720p si nécessaire)</label>
+      <div id="square" style="margin-top:10px" title="Distance mesurée au mètre ruban entre les centres des boules A (rouge) et B (verte). La boule E (rouge) est au milieu de A-D.">
+        <div class="row" style="color:var(--muted); white-space:nowrap">
+          <span>Carré des boules</span>
+          <input id="side" type="number" min="0.5" max="8" step="0.01" class="num">
+          <span>m</span>
+          <button onclick="saveSide()" style="margin-left:auto">Enregistrer</button>
+        </div>
+        <p class="hint" style="margin:4px 0 0">Côté mesuré au mètre ruban (diagonale = côté × 1,41).</p>
+      </div>
       <label>Aperçu
         <select id="pfps" onchange="send({a:'preview', fps: +this.value})">
           <option value="0">coupé</option><option value="1">1 i/s</option><option value="3" selected>3 i/s</option><option value="6">6 i/s</option>
@@ -169,7 +180,9 @@ function camCard(c) {
   let chk = '';
   if (c.check) {
     if (c.check.pending) chk = 'Vérification des boules…';
-    else if (c.check.ok) chk = `<span class="${c.check.seen >= 4 ? 'good' : 'bad'}">● ${c.check.seen}/${c.check.total} boules</span> · erreur ${c.check.rms} px · caméra à (${c.check.center.join(' ; ')}) m · <a onclick="showCheck('${c.id}')">voir l'image</a>`;
+    else if (c.check.ok) chk = `<span class="${c.check.seen >= 4 ? 'good' : 'bad'}">● ${c.check.seen}/${c.check.total} boules</span> · erreur ${c.check.rms} px · caméra à (${c.check.center.join(' ; ')}) m · <a onclick="showCheck('${c.id}')">voir l'image</a>`
+      + (c.check.note ? `<br><span class="warnc">⚠ ${esc(c.check.note)}</span>` : '')
+      + (c.check.aligned ? `<br><span class="warnc">⚠ boules vues presque alignées : une 5e boule visible améliorerait la mesure</span>` : '');
     else chk = `<span class="bad">● ${esc(c.check.message || 'boules non trouvées')}</span> · <a onclick="showCheck('${c.id}')">voir l'image</a>`;
   }
   const tk = c.take || {};
@@ -229,6 +242,9 @@ function render() {
   if (key !== lastGridKey) { lastGridKey = key; $('grid').innerHTML = cams.map(camCard).join('') + addCard(); }
 
   if (document.activeElement !== $('p60')) $('p60').checked = !!S.prefer60;
+  const L = S.layout || {};
+  $('square').style.display = L.standard === false && L.side === undefined ? 'none' : '';
+  if (document.activeElement !== $('side') && L.side !== undefined) $('side').value = L.side.toFixed(2);
   if (document.activeElement !== $('pfps')) $('pfps').value = String(S.preview_fps);
   $('chipCams').textContent = `${cams.length} caméra${cams.length > 1 ? 's' : ''}`;
   $('chipCams').className = 'chip ' + (cams.length >= 2 ? 'ok' : cams.length ? 'warn' : 'err');
@@ -257,6 +273,11 @@ function render() {
     </div>`).join('') : '<p class="hint">Aucune prise pour l\'instant.</p>';
 }
 
+function saveSide() {
+  const v = parseFloat(String($('side').value).replace(',', '.'));
+  if (!(v >= 0.5 && v <= 8)) { toast('Indiquez le côté du carré en mètres (ex. 1.50)', 'error'); return; }
+  send({ a: 'square', side: v });
+}
 function record() { takeTyped = false; send({ a: 'record', take: $('takeName').value.trim() }); actx = actx || new AudioContext(); actx.resume(); }
 function rename(id, old) { const n = prompt('Nom de la caméra (sert de nom de fichier) :', old); if (n) send({ a: 'rename', cam: id, name: n }); }
 function identifyAll() { (S?.cams || []).forEach(c => send({ a: 'identify', cam: c.id })); }

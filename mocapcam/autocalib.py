@@ -77,6 +77,8 @@ def refine(cams, poses, delays, fps, volume, cfg=None, fixed_intrinsics=None, lo
             "estimation par les boules conservée")
         return cams, None
     f0 = np.array([c["K"][0, 0] for c in cams])
+    # a priori de focale centré sur la focale nominale de l'objectif (quand elle est connue)
+    lf_nom = np.array([np.log(c.get("f_nominal") or c["K"][0, 0]) - np.log(c["K"][0, 0]) for c in cams])
     cxy = np.array([[c["K"][0, 2], c["K"][1, 2]] for c in cams])
     cam0 = np.zeros((V, NCP))
     for v, c in enumerate(cams):
@@ -98,7 +100,7 @@ def refine(cams, poses, delays, fps, volume, cfg=None, fixed_intrinsics=None, lo
     uv = obs[:, 2:4]
     w = np.sqrt(obs[:, 4])
     w_mark = 4.0
-    sig_f = 0.5
+    sig_f = 0.25
     sig = [DIST_SIGMA.get(c.get("lens") or "wide", DIST_SIGMA["wide"]) for c in cams]
 
     def unpack(p):
@@ -123,7 +125,7 @@ def refine(cams, poses, delays, fps, volume, cfg=None, fixed_intrinsics=None, lo
             if fixed_intrinsics[v]:
                 pri += [(cp[v, 6]) * 1e3, (cp[v, 7] - cam0[v, 7]) * 1e3, (cp[v, 8] - cam0[v, 8]) * 1e3]
             else:
-                pri += [cp[v, 6] / sig_f, cp[v, 7] / sig[v][0], cp[v, 8] / sig[v][1]]
+                pri += [(cp[v, 6] - lf_nom[v]) / sig_f, cp[v, 7] / sig[v][0], cp[v, 8] / sig[v][1]]
         out.append(np.array(pri))
         return np.concatenate(out)
 

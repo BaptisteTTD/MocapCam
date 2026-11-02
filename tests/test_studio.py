@@ -208,6 +208,23 @@ async def main():
                 ok("vérification des boules en direct", good,
                    "; ".join(f"{k}: {v.get('seen')}/{v.get('total')} boules, erreur {v.get('rms')} px, caméra à {v.get('center')}"
                              for k, v in chk.items()))
+                # côté du carré des boules saisi dans l'interface -> studio.json
+                await page.fill("#side", "1.8")
+                await page.locator("#square button").click()
+                await page.wait_for_timeout(600)
+                cfg1 = json.load(open(os.path.join(STUDIO, "studio.json"), encoding="utf-8"))
+                pos1 = {m["name"]: m["position"][:2] for m in cfg1["markers"]}
+                st = await ui_state(session)
+                await page.fill("#side", "2.5")
+                await page.locator("#square button").click()
+                await page.wait_for_timeout(600)
+                cfg2 = json.load(open(os.path.join(STUDIO, "studio.json"), encoding="utf-8"))
+                pos2 = {m["name"]: m["position"][:2] for m in cfg2["markers"]}
+                ok("côté du carré saisi dans Studio", pos1["C"] == [1.8, 1.8] and pos1["E"] == [0.0, 0.9]
+                   and pos2["B"] == [2.5, 0.0] and st["layout"]["side"] == 1.8,
+                   f"1,8 m -> C {pos1['C']}, E {pos1['E']} ; retour à 2,5 m -> B {pos2['B']}")
+                await page.locator("text=Vérifier les boules").click()
+                await page.wait_for_timeout(3000)
                 shot1 = os.path.join(D, "studio_avant.png")
                 await page.screenshot(path=shot1)
                 SHOTS.append(shot1)

@@ -60,23 +60,35 @@ et acceptez l'installation depuis une source inconnue.
 
 ## 2. Les boules au sol (une fois)
 
-Il faut 5 demi-balles de ping-pong peintes de couleurs **vives et mates** (le brillant crée des reflets),
-collées au sol avec de l'adhésif double face :
+Il faut 5 demi-boules peintes de couleurs **vives et mates** (le brillant crée des reflets),
+collées au sol avec de l'adhésif double face : 2 rouges, 1 verte, 1 bleue, 1 jaune.
+Elles forment un **carré** dont la taille dépend de votre pièce (1,5 à 3 m de côté), plus une
+5ᵉ boule au milieu d'un côté :
 
-| Boule | Couleur | Position par défaut |
+| Boule | Couleur | Position (côté du carré = L) |
 |---|---|---|
-| A | rouge | (0 ; 0), l'origine |
-| B | vert | (2,5 ; 0) |
-| C | bleu | (2,5 ; 2,5) |
-| D | jaune | (0 ; 2,5) |
-| E | rouge | (0 ; 1,25) |
+| A | rouge | un coin : l'origine (0 ; 0) |
+| B | verte | coin voisin de A : (L ; 0) |
+| C | bleue | coin opposé à A : (L ; L) |
+| D | jaune | l'autre coin voisin de A : (0 ; L) |
+| E | rouge | **au milieu** du côté A-D : (0 ; L/2) |
 
+* **Mesurez au mètre ruban**, d'un centre de boule à l'autre : les 4 côtés égaux, et les
+  **2 diagonales égales** (= L × 1,41), sinon le carré est un losange. E doit être pile au milieu
+  de A-D, sur la ligne. Une erreur de 2-3 cm est acceptable, 10 cm ne l'est plus.
+* Indiquez le côté L dans MocapCam Studio : **Préparation > Carré des boules**, puis *Enregistrer*.
+  Si la valeur est fausse, tout le mouvement est à la mauvaise échelle (le traitement l'affiche :
+  « taille estimée de l'acteur »).
+* Le sens n'a pas d'importance : le carré peut tourner dans un sens ou dans l'autre (B et C à
+  gauche ou à droite de la ligne A-D), le logiciel s'en rend compte tout seul. Si deux boules de
+  couleurs différentes sont échangées, il le détecte aussi et le signale.
 * **X** va de A vers B, **Y** de A vers D, **Z** vers le haut. Le sol est à Z = 0.
-* Vous pouvez changer les distances : mesurez au mètre ruban, vérifiez que les deux diagonales
-  sont égales (angle droit), puis reportez les valeurs en mètres dans `studio\studio.json`.
-* Chaque caméra doit voir **au moins 4 boules**. Une boule cachée ou hors cadre ne pose pas de problème.
+* Chaque caméra doit voir **au moins 4 boules**, idéalement les 5. Si elle n'en voit que 4 dont
+  3 alignées (A, E, D + une autre), ça marche, mais la mesure est moins sûre : Studio l'indique.
+  Une boule cachée par l'acteur pendant la prise ne pose pas de problème.
 * Le logiciel calcule la position des caméras **à chaque prise**, tout seul. Vous pouvez donc
-  déplacer les trépieds d'une séance à l'autre sans rien recalibrer.
+  déplacer les trépieds d'une séance à l'autre sans rien recalibrer. Ne déplacez pas les boules
+  entre deux prises (sinon remesurez).
 * Il n'y a **aucune autre calibration à faire**, pas de damier. Les boules donnent une première
   estimation de la position et de l'objectif de chaque téléphone. Pendant le traitement, les
   mouvements de l'acteur, vus par les deux caméras, servent ensuite à affiner tout ça.
@@ -183,7 +195,8 @@ en FBX ou BVH depuis Blender.
 | Clé | Rôle |
 |---|---|
 | `cameras` | noms des caméras, donc des fichiers vidéo. Ajoutez un 3ᵉ téléphone ici. |
-| `marker_height` | hauteur du centre visible des boules (0,01 m pour une demi-balle de ping-pong) |
+| `marker_height` | hauteur du centre visible des boules : 0,4 × le rayon pour une demi-boule (0,016 m pour une boule de 8 cm coupée en deux) |
+| `markers[].position` | positions en mètres. Pour un carré, réglez plutôt le côté dans Studio. |
 | `markers` | ajouter des boules (6 à 8) améliore la première estimation. Une boule posée sur un objet de hauteur connue (Z ≠ 0) l'améliore beaucoup. |
 | `markers[].hsv` | couleur sur mesure `[teinte 0-180, tolérance, saturation min, luminosité min]` |
 | `reconstruction.score_hands` | seuil de confiance des mains (augmentez-le si les doigts tremblent) |
@@ -194,8 +207,10 @@ en FBX ou BVH depuis Blender.
 
 | Problème | Solution |
 |---|---|
-| « Boules introuvables » | Regardez `fond_*.jpg` : boules trop petites, couleur délavée (HDR activé ?), éclairage trop faible. Ajustez `hsv`. |
-| Erreur de calibration > 4 px | Une boule mal mesurée, ou une tache de même couleur confondue avec une boule. |
+| « Boules introuvables ou incohérentes » | Regardez `fond_*.jpg` : moins de 4 boules visibles, boules trop petites, couleur délavée (HDR activé ?), éclairage trop faible (ajustez `hsv`), ou carré mal mesuré. |
+| « boules … semblent échangées » | Deux boules ne sont pas à la place du tableau. C'est pris en compte : vous pouvez les laisser ainsi. |
+| « taille peu plausible » | Le côté du carré indiqué dans Studio ne correspond pas à la réalité : remesurez-le, enregistrez-le, puis retraitez la prise (rapide : la détection 2D est gardée). |
+| Erreur de calibration > 4 px | Normal avant l'affinage par le corps si les boules sont un peu mal placées. Au-delà de 10 px : une boule mal mesurée, ou une tache de même couleur confondue avec une boule. |
 | « Format d'image différent » | Seulement avec le damier optionnel : il a été filmé dans une autre orientation ou une autre résolution. |
 | Le téléphone ne trouve pas le PC | Même Wi-Fi (pas « invité ») ; autorisez Python dans le pare-feu Windows (réseaux privés) ; essayez l'adresse affichée sous le QR code. |
 | Signal sonore « peu audible » | Montez le volume du PC. Sinon, la synchro se fait par les horloges, à environ une image près. |

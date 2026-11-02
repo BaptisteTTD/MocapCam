@@ -172,7 +172,7 @@ class Studio:
             processing=None if self.proc is None else dict(take=self.proc["take"], running=self.proc["running"],
                                                           ok=self.proc.get("ok")),
             qr=self.qr_payload(), now=now_ms(), studio=self.studio_dir, captures=self.captures_dir,
-            prefer60=self.prefer60, preview_fps=self.preview_fps,
+            prefer60=self.prefer60, preview_fps=self.preview_fps, layout=self.layout_info(),
         )
 
     def qr_payload(self):
@@ -340,18 +340,60 @@ class Studio:
         try:
             cfg = pipeline.load_studio(self.studio_dir)
             mlist = [dict(m, position=m["position_3d"]) for m in cfg["markers"]]
-            vol = mk.volume_box(mlist, cfg["volume"]["margin"], cfg["volume"]["height"])
-            pose = mk.solve_camera_pose(img, mlist, lens=lens)
-            dbg = mk.draw_debug(img, mlist, pose["K"], pose["dist"], pose, vol)
+            view = dict(name=name, bg=img, K=None, dist=None, lens=lens,
+                        cands=mk.find_candidates(img, mlist))
+            # une seule image : on accepte le miroir, mais la recherche de boules échangées
+            # (moins sûre avec une seule vue) est faite au traitement, sur toutes les caméras
+            ml, poses, layout = pipeline.choose_layout([view], mlist, log=lambda m: None, swaps=False)
+            pose = poses[0]
+            if pose is None:
+                raise RuntimeError("moins de 4 boules reconnues, ou disposition différente de studio.json")
+            vol = mk.volume_box(ml, cfg["volume"]["margin"], cfg["volume"]["height"])
+            dbg = mk.draw_debug(img, ml, pose["K"], pose["dist"], pose, vol)
             res = dict(ok=True, rms=round(pose["rms"], 2), seen=len(pose["used"]), total=len(mlist),
                        missing=pose["missing"], focal=round(float(pose["K"][0, 0]), 0),
-                       center=[round(v, 2) for v in pose["center"]], size=[img.shape[1], img.shape[0]])
+                       center=[round(v, 2) for v in pose["center"]], size=[img.shape[1], img.shape[0]],
+                       aligned=bool(pose.get("aligned")),
+                       note=None if pose["rms"] <= 8 else "écart élevé : disposition différente de studio.json ? "
+                                                          "(couleurs échangées, distances)")
         except Exception as e:  # noqa: BLE001
             dbg = img.copy()
             cv2.putText(dbg, "Boules non trouvees", (30, 60), cv2.FONT_HERSHEY_SIMPLEX, 1.6, (0, 0, 255), 3)
             res = dict(ok=False, message=str(e), size=[img.shape[1], img.shape[0]])
         ok, enc = cv2.imencode(".jpg", dbg, [cv2.IMWRITE_JPEG_QUALITY, 85])
         return res, enc.tobytes() if ok else b""
+
+    # ------------------------------------------------------------------ disposition des boules
+    STANDARD = {"A": (0, 0), "B": (1, 0), "C": (1, 1), "D": (0, 1), "E": (0, 0.5)}
+
+    def layout_info(self):
+        """Côté du carré décrit dans studio.json (disposition standard A-B-C-D + E au milieu)."""
+        try:
+            with open(os.path.join(self.studio_dir, "studio.json"), encoding="utf-8") as f:
+                cfg = json.load(f)
+            pos = {m["name"]: m["position"] for m in cfg.get("markers", [])}
+            if set(pos) != set(self.STANDARD):
+                return dict(standard=False)
+            side = float(np.hypot(pos["B"][0] - pos["A"][0], pos["B"][1] - pos["A"][1]))
+            ok = all(np.hypot(pos[n][0] - u * side, pos[n][1] - v * side) < 1e-3
+                     for n, (u, v) in self.STANDARD.items())
+            return dict(standard=ok, side=round(side, 3))
+        except (OSError, ValueError, KeyError, TypeError):
+            return dict(standard=False)
+
+    def set_square_side(self, side):
+        path = os.path.join(self.studio_dir, "studio.json")
+        with open(path, encoding="utf-8") as f:
+            cfg = json.load(f)
+        names = {m["name"] for m in cfg.get("markers", [])}
+        if names != set(self.STANDARD):
+            raise ValueError("studio.json décrit une disposition personnalisée : modifiez-le à la main")
+        for m in cfg["markers"]:
+            u, v = self.STANDARD[m["name"]]
+            z = m["position"][2] if len(m["position"]) > 2 else 0.0
+            m["position"] = [round(u * side, 4), round(v * side, 4), z]
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(cfg, f, indent=2, ensure_ascii=False)
 
     # ------------------------------------------------------------------ enregistrement
     async def start_take(self, name):
@@ -619,6 +661,19 @@ class Studio:
             asyncio.ensure_future(self.process(m.get("take")))
         elif a == "open":
             self.open_folder(m.get("take"))
+        elif a == "square":
+            try:
+                side = float(m.get("side"))
+                if not 0.5 <= side <= 8:
+                    raise ValueError("le côté doit être entre 0,5 et 8 m")
+                self.set_square_side(side)
+                for c in cams:
+                    c.check = None
+                await self.toast(f"Carré de {side:.2f} m enregistré dans studio.json. "
+                                 "Retraitez les prises filmées avec cette disposition.", "ok")
+            except (TypeError, ValueError) as e:
+                await self.toast(f"Côté du carré non enregistré : {e}", "error")
+            self.changed()
         elif a == "new_qr":
             self.token = secrets.token_hex(4)
             self.changed()

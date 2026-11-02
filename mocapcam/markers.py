@@ -86,22 +86,49 @@ def default_K(width, height, lens="wide"):
     return np.array([[f, 0, width / 2.0], [0, f, height / 2.0], [0, 0, 1.0]])
 
 
-def _solve(obj, img, K, dist):
+MIN_CAMERA_HEIGHT = 0.15   # m : une caméra ne peut pas être sous le sol
+
+
+def _camera_height(R, t):
+    return float((-R.T @ np.asarray(t, float).reshape(3))[2])
+
+
+def _solutions(obj, img, K, dist):
+    """Toutes les poses plausibles. Les boules étant toutes au sol (points coplanaires),
+    il existe deux solutions « miroir » : on garde celles où la caméra est au-dessus du sol."""
+    out = []
+    coplanar = np.ptp(obj[:, 2]) < 0.01
+    cands = []
+    if coplanar and len(obj) >= 4:
+        try:
+            n, rvecs, tvecs, _ = cv2.solvePnPGeneric(obj, img, K, dist, flags=cv2.SOLVEPNP_IPPE)
+            cands += list(zip(rvecs, tvecs))
+        except cv2.error:
+            pass
     ok, rvec, tvec = cv2.solvePnP(obj, img, K, dist, flags=cv2.SOLVEPNP_SQPNP)
-    if not ok:
-        return None
-    rvec, tvec = cv2.solvePnPRefineLM(obj, img, K, dist, rvec, tvec)
-    proj, _ = cv2.projectPoints(obj, rvec, tvec, K, dist)
-    err = np.linalg.norm(proj.reshape(-1, 2) - img, axis=1)
-    R, _ = cv2.Rodrigues(rvec)
-    # caméra devant les points
-    zc = (R @ obj.T + tvec).T[:, 2]
-    if np.any(zc <= 0):
-        return None
-    return R, tvec.ravel(), err
+    if ok:
+        cands.append((rvec, tvec))
+    for rvec, tvec in cands:
+        rvec, tvec = cv2.solvePnPRefineLM(obj, img, K, dist, rvec.copy(), tvec.copy())
+        R, _ = cv2.Rodrigues(rvec)
+        if np.any((R @ obj.T + tvec).T[:, 2] <= 0):      # boules devant la caméra
+            continue
+        if _camera_height(R, tvec) < MIN_CAMERA_HEIGHT:
+            continue
+        proj, _ = cv2.projectPoints(obj, rvec, tvec, K, dist)
+        err = np.linalg.norm(proj.reshape(-1, 2) - img, axis=1)
+        out.append((R, tvec.ravel(), err))
+    return out
 
 
-def _solve_with_focal(obj, img, K0, R, t, prior_sigma=0.35):
+def _solve(obj, img, K, dist):
+    sols = _solutions(obj, img, K, dist)
+    if not sols:
+        return None
+    return min(sols, key=lambda s: float(np.mean(s[2] ** 2)))
+
+
+def _solve_with_focal(obj, img, K0, R, t, prior_sigma=0.15, prior_px=3.0):
     """Affine pose + focale (centre optique fixé au milieu, sans distorsion).
     Un a priori faible retient la focale près de la valeur de départ quand
     les boules ne suffisent pas à la déterminer."""
@@ -113,7 +140,8 @@ def _solve_with_focal(obj, img, K0, R, t, prior_sigma=0.35):
         f = f0 * np.exp(p[6])
         K = np.array([[f, 0, cx], [0, f, cy], [0, 0, 1.0]])
         pr, _ = cv2.projectPoints(obj, p[:3], p[3:6], K, None)
-        return np.concatenate([(pr.reshape(-1, 2) - img).ravel(), [p[6] / prior_sigma]])
+        # a priori : un écart d'un sigma sur la focale « coûte » prior_px pixels
+        return np.concatenate([(pr.reshape(-1, 2) - img).ravel(), [prior_px * p[6] / prior_sigma]])
 
     sol = least_squares(res, np.concatenate([rvec0, t, [0.0]]), method="lm")
     p = sol.x
@@ -122,20 +150,105 @@ def _solve_with_focal(obj, img, K0, R, t, prior_sigma=0.35):
     R2 = cv2.Rodrigues(p[:3])[0]
     pr, _ = cv2.projectPoints(obj, p[:3], p[3:6], K, None)
     err = np.linalg.norm(pr.reshape(-1, 2) - img, axis=1)
-    if np.any((R2 @ obj.T + p[3:6, None])[2] <= 0):
+    if np.any((R2 @ obj.T + p[3:6, None])[2] <= 0) or _camera_height(R2, p[3:6]) < MIN_CAMERA_HEIGHT:
         return None
     return K, R2, p[3:6].copy(), err
 
 
+def spread_ok(obj, rel=0.04):
+    """Vrai s'il existe 4 boules dont aucun trio n'est aligné : la focale peut alors être
+    estimée par les boules. Sinon (par exemple 3 boules alignées + 1), seule la focale
+    nominale de l'objectif est fiable."""
+    p = np.asarray(obj, float)[:, :2]
+    if len(p) < 4:
+        return False
+    span2 = max(float(np.sum((a - b) ** 2)) for a, b in itertools.combinations(p, 2))
+    if span2 <= 0:
+        return False
+    def area(i, j, k):
+        a, b = p[j] - p[i], p[k] - p[i]
+        return abs(a[0] * b[1] - a[1] * b[0]) / 2
+
+    for q in itertools.combinations(range(len(p)), 4):
+        if all(area(i, j, k) > rel * span2 for i, j, k in itertools.combinations(q, 3)):
+            return True
+    return False
+
+
+def mirrored(markers):
+    """Disposition symétrique (X -> -X) : mêmes distances entre boules, mais
+    B/C de l'autre côté de la ligne A-D."""
+    return [dict(m, position=[-m["position"][0]] + list(m["position"][1:])) for m in markers]
+
+
+def swapped(markers, i, j):
+    out = [dict(m) for m in markers]
+    out[i]["position"], out[j]["position"] = markers[j]["position"], markers[i]["position"]
+    return out
+
+
+def find_candidates(image_bgr, markers, frames=None):
+    """Taches candidates pour chaque boule (dépend seulement des couleurs)."""
+    if frames:
+        return detect_candidates_multi(list(frames) + [image_bgr], markers)
+    return detect_candidates(image_bgr, markers)
+
+
+def detect_candidates_multi(frames, markers, min_presence=0.25, top=4):
+    """Cherche les boules sur plusieurs images de la vidéo et ne garde que les taches
+    immobiles et présentes souvent : une boule cachée un moment par l'acteur est
+    retrouvée, une tache qui bouge (vêtement) est écartée ou reléguée."""
+    H, W = frames[0].shape[:2]
+    rad = 0.008 * max(W, H)
+    per = [detect_candidates(f, markers) for f in frames]
+    out = []
+    for mi in range(len(markers)):
+        pts = [c[1] for fr in per for c in fr[mi]]
+        clusters = []
+        for p in pts:
+            for cl in clusters:
+                if np.hypot(p[0] - cl["c"][0], p[1] - cl["c"][1]) < rad:
+                    cl["p"].append(p)
+                    cl["c"] = np.median(np.array(cl["p"]), 0)
+                    break
+            else:
+                clusters.append(dict(p=[p], c=np.array(p, float)))
+        scored = []
+        for cl in clusters:
+            arr = np.array(cl["p"])
+            presence = min(1.0, len(arr) / len(frames))
+            if presence < min_presence:
+                continue
+            spread = float(np.median(np.linalg.norm(arr - cl["c"], axis=1)))
+            scored.append((presence / (1.0 + spread), (float(cl["c"][0]), float(cl["c"][1])), len(arr)))
+        scored.sort(key=lambda x: -x[0])
+        out.append(scored[:top])
+    return out
+
+
+def fit_score(err, n_missing, focal_free=True):
+    """Qualité d'un ajustement (plus bas = mieux). L'écart est corrigé du nombre de
+    paramètres : avec 4 boules et la focale libre, presque n'importe quelle disposition
+    « colle », ce qui ne prouve rien ; avec 5 boules, un petit écart est significatif.
+    Chaque boule non utilisée coûte 2 px."""
+    n_obs = 2 * len(err)
+    dof = max(n_obs - (7 if focal_free else 6), 0.5)
+    sigma = float(np.sqrt(np.sum(np.asarray(err) ** 2) / dof))
+    return sigma + 2.0 * n_missing
+
+
 def solve_camera_pose(image_bgr, markers, K=None, dist=None, min_markers=4, max_err_px=8.0,
-                      estimate_focal=False, lens="wide"):
+                      estimate_focal=False, lens="wide", frames=None, cands=None):
     """Retourne un dict : R, t (monde -> caméra), K, centre, erreurs, détections.
-    Sans K (pas de calibration optique), la focale est estimée avec les boules."""
+    Sans K (pas de calibration optique), la focale est estimée avec les boules, autour
+    de la focale nominale de l'objectif ; elle reste à cette valeur quand les boules
+    vues sont presque alignées (3 alignées + 1)."""
     H, W = image_bgr.shape[:2]
     if K is None:
         K, dist, estimate_focal = default_K(W, H, lens), np.zeros(5), True
     dist = np.zeros(5) if dist is None else dist
-    cands = detect_candidates(image_bgr, markers)
+    if cands is None:
+        cands = find_candidates(image_bgr, markers, frames)
     world = np.array([m["position"] for m in markers], np.float64)
     options = [[None] + [c[1] for c in cl] for cl in cands]
     # focale inconnue : tolérance plus large au premier tri
@@ -148,33 +261,33 @@ def solve_camera_pose(image_bgr, markers, K=None, dist=None, min_markers=4, max_
         pts = [combo[i] for i in used]
         if len(set(pts)) < len(pts):  # une même tache pour deux boules
             continue
-        sol = _solve(world[used], np.array(pts, np.float64), K, dist)
-        if sol is None:
-            continue
-        R, t, err = sol
-        if err.max() > thr:
-            continue
-        rms = float(np.sqrt(np.mean(err ** 2)))
-        found.append((rms + 1.5 * (len(markers) - len(used)), combo, used, R, t, err))
+        for R, t, err in _solutions(world[used], np.array(pts, np.float64), K, dist):
+            if err.max() > thr:
+                continue
+            found.append((fit_score(err, len(markers) - len(used), False), combo, used, R, t, err))
     found.sort(key=lambda f: f[0])
     best = None
-    for _, combo, used, R, t, err in found[: (10 if estimate_focal else 1)]:
+    for _, combo, used, R, t, err in found[: (12 if estimate_focal else 1)]:
         obj = world[used]
         img = np.array([combo[i] for i in used], np.float64)
         Kc = K
+        spread = spread_ok(obj)
+        well = spread and len(used) >= 5
         if estimate_focal:
-            sol = _solve_with_focal(obj, img, K, R, t)
+            # focale libre autour de la valeur nominale de l'objectif ; retenue plus fort quand
+            # les boules la déterminent mal (moins de 5 boules, ou 3 alignées + 1). Elle est
+            # de toute façon affinée ensuite avec le corps de l'acteur.
+            sol = _solve_with_focal(obj, img, K, R, t, prior_sigma=0.20 if well else 0.10)
             if sol is None:
                 continue
             Kc, R, t, err = sol
-            if err.max() > max_err_px * 2:
-                continue
+        if err.max() > max_err_px * (3 if estimate_focal else 2):
+            continue
         rms = float(np.sqrt(np.mean(err ** 2)))
-        # pénalité par boule manquante : on préfère utiliser toutes les boules
-        score = rms + 1.5 * (len(markers) - len(used))
+        score = fit_score(err, len(markers) - len(used), estimate_focal)
         if best is None or score < best["score"]:
             best = dict(score=score, R=R, t=t, K=Kc, dist=dist, rms=rms, used=used,
-                        focal_estimated=estimate_focal,
+                        focal_estimated=bool(estimate_focal and well), aligned=not spread,
                         points={markers[i]["name"]: combo[i] for i in used})
     if best is None:
         raise RuntimeError(

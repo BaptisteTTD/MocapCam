@@ -142,6 +142,67 @@ def test_markers():
     ok("boules seules (sans damier) : première estimation", worst < 0.4, "; ".join(msg))
 
 
+def _rigid2d(src, dst):
+    """Transformation rigide du plan (sans miroir) qui amène src sur dst."""
+    a, b = src - src.mean(0), dst - dst.mean(0)
+    U, _, Vt = np.linalg.svd(a.T @ b)
+    d = np.sign(np.linalg.det(Vt.T @ U.T))
+    Rm = Vt.T @ np.diag([1, d]) @ U.T
+    return Rm, dst.mean(0) - Rm @ src.mean(0), d > 0
+
+
+CAMS_LAYOUT = [look_at([-1.6, -2.4, 1.6], [1.25, 1.25, 0.2]),
+               look_at([4.3, -1.9, 1.5], [1.25, 1.25, 0.2])]
+
+
+def test_layout_errors():
+    """Boules mal placées comme chez un vrai utilisateur : posées à ±4 cm près, deux boules
+    échangées ou tout en miroir, et une caméra qui ne voit que 4 boules (dont 3 alignées).
+    Le logiciel doit retrouver la bonne disposition et la bonne position des caméras."""
+    cfg = dict(pipeline.DEFAULT_STUDIO)
+    mlist = [dict(m, position=[m["position"][0], m["position"][1], 0.01]) for m in cfg["markers"]]
+    rng = np.random.default_rng(3)
+    idx = {m["name"]: i for i, m in enumerate(mlist)}
+    mirror_in_place = [dict(m, position=[2.5 - m["position"][0]] + list(m["position"][1:])) for m in mlist]
+    cases = {
+        "telle que décrite": mlist,
+        "miroir": mirror_in_place,
+        "A<->D": mk.swapped(mlist, idx["A"], idx["D"]),
+        "B<->C": mk.swapped(mlist, idx["B"], idx["C"]),
+    }
+    msg, good = [], True
+    for label, phys in cases.items():
+        phys = [dict(m, position=[m["position"][0] + rng.uniform(-0.04, 0.04),
+                                  m["position"][1] + rng.uniform(-0.04, 0.04), 0.01]) for m in phys]
+        views = []
+        for ci, (R, t) in enumerate(CAMS_LAYOUT):
+            # caméra 1 : la boule posée au coin (2,5 ; 0) est cachée par un meuble
+            shown = [m for m in phys if not (ci == 1 and np.hypot(m["position"][0] - 2.5, m["position"][1]) < 0.2)]
+            img = render_floor(R, t, shown, K_TRUE[ci], DIST_TRUE[ci])
+            views.append(dict(name=f"cam{ci}", bg=img, K=None, dist=None, lens="wide",
+                              cands=mk.find_candidates(img, mlist)))
+        ml, poses, lab = pipeline.choose_layout(views, mlist, log=lambda m: None)
+        # repère choisi par le logiciel <-> repère réel : doit être une transformation rigide
+        src = np.array([m["position"][:2] for m in phys])
+        dst = np.array([{x["name"]: x for x in ml}[m["name"]]["position"][:2] for m in phys])
+        Rm, tm, proper = _rigid2d(src, dst)
+        fit = np.abs(src @ Rm.T + tm - dst).max()
+        errs = []
+        for p, (R, t) in zip(poses, CAMS_LAYOUT):
+            if p is None:
+                errs.append(np.inf)
+                continue
+            C = -R.T @ t
+            C2 = np.array([*(Rm @ C[:2] + tm), C[2]])
+            errs.append(np.linalg.norm(np.array(p["center"]) - C2))
+        # première estimation seulement (focale nominale, boules imprécises) : le corps
+        # de l'acteur l'affine ensuite
+        found = proper and fit < 0.15 and max(errs) < 0.8
+        good &= found
+        msg.append(f"{label} -> {lab} (caméras à {', '.join(f'{e * 100:.0f}' for e in errs)} cm)")
+    ok("boules mal placées (échange, miroir, ±4 cm, 3 alignées + 1)", good, " ; ".join(msg))
+
+
 # --------------------------------------------------------------------------- 4. mouvement de référence (Blender)
 
 def reset_blender():
@@ -299,6 +360,59 @@ def test_reconstruction(X_gt):
     return path
 
 
+# --------------------------------------------------------------------------- 5b. boules imprécises
+
+def test_imprecise_balls(X_gt):
+    """Conditions réelles : boules posées à ±4 cm près, focale inconnue (objectif nominal
+    ±10 %), une caméra qui ne voit que 3 boules alignées + 1. Le corps de l'acteur doit
+    corriger la première estimation."""
+    from mocapcam import autocalib
+    cfg = pipeline.DEFAULT_STUDIO
+    rng = np.random.default_rng(7)
+    mlist = [dict(m, position=[m["position"][0], m["position"][1], 0.01]) for m in cfg["markers"]]
+    phys = [dict(m, position=[m["position"][0] + rng.uniform(-0.04, 0.04),
+                              m["position"][1] + rng.uniform(-0.04, 0.04), 0.01]) for m in mlist]
+    views = []
+    for ci, (R, t) in enumerate(CAMS_TRUE):
+        shown = [m for m in phys if not (ci == 1 and m["name"] == "B")]
+        img = render_floor(R, t, shown, K_TRUE[ci], DIST_TRUE[ci])
+        views.append(dict(name=f"cam{ci}", bg=img, K=None, dist=None, lens="wide",
+                          cands=mk.find_candidates(img, mlist)))
+    ml, pz, lab = pipeline.choose_layout(views, mlist, log=lambda m: None)
+    vol = mk.volume_box(mlist, 0.5, 2.3)
+    cams = [dict(name=f"cam{ci}", K=p["K"], dist=np.zeros(5), R=p["R"], t=p["t"], center=p["center"],
+                 marker_obs=p["marker_obs"], width=W, height=H, lens="wide",
+                 f_nominal=mk.default_K(W, H, "wide")[0, 0]) for ci, p in enumerate(pz)]
+    first = [np.linalg.norm(np.array(c["center"]) + R.T @ t) for c, (R, t) in zip(cams, CAMS_TRUE)]
+    poses = synth_2d(X_gt)
+    delays = [0.0, 0.0]
+    cams, ac = autocalib.refine(cams, poses, delays, FPS, vol, cfg["reconstruction"], log=lambda *a: None)
+    X, stats = triangulate.reconstruct(cams, poses, delays, FPS, vol, cfg["reconstruction"], log=lambda *a: None)
+    Xs = triangulate.postprocess(X, FPS, cfg["filtering"])
+    msg, worst_c, worst_f = [], 0, 0
+    for ci, (R, t) in enumerate(CAMS_TRUE):
+        dC = np.linalg.norm(np.array(cams[ci]["center"]) + R.T @ t)
+        df = cams[ci]["K"][0, 0] / K_TRUE[ci][0, 0] - 1
+        worst_c, worst_f = max(worst_c, dC), max(worst_f, abs(df))
+        msg.append(f"cam{ci}: {first[ci] * 100:.0f} -> {dC * 100:.1f} cm, focale {df * 100:+.1f} %")
+    # le repère (sol, origine) ne peut pas être plus juste que la pose des boules : on mesure
+    # à part le décalage global et la qualité du mouvement une fois ce décalage retiré
+    A = Xs[:, BODY_IDX].reshape(-1, 3)
+    B = X_gt[:, BODY_IDX].reshape(-1, 3)
+    m = np.isfinite(A).all(1) & np.isfinite(B).all(1)
+    a0, b0 = A[m].mean(0), B[m].mean(0)
+    U, _, Vt = np.linalg.svd((A[m] - a0).T @ (B[m] - b0))
+    Rr = Vt.T @ np.diag([1, 1, np.sign(np.linalg.det(Vt.T @ U.T))]) @ U.T
+    e_raw = np.median(np.linalg.norm(A[m] - B[m], axis=1)) * 1000
+    e_al = np.median(np.linalg.norm((A[m] - a0) @ Rr.T + b0 - B[m], axis=1)) * 1000
+    tilt = np.degrees(np.arccos(np.clip(Rr[2, 2], -1, 1)))
+    h, h_gt = pipeline.actor_height(Xs), pipeline.actor_height(X_gt)
+    ok("boules imprécises + 3 alignées : affinage par le corps",
+       worst_f < 0.03 and e_al < 10 and e_raw < 60 and tilt < 2 and abs(h / h_gt - 1) < 0.03,
+       "; ".join(msg) + f" ; corps {e_al:.1f} mm (repère décalé de {e_raw:.0f} mm, sol incliné de "
+       f"{tilt:.1f}°) ; taille estimée {h:.2f} m (vraie {h_gt:.2f} m)")
+
+
 # --------------------------------------------------------------------------- 5c. ultra grand-angle
 
 def test_ultrawide(X_gt):
@@ -445,10 +559,12 @@ if __name__ == "__main__":
     test_sync()
     test_intrinsics()
     test_markers()
+    test_layout_errors()
     test_mixed_fps()
     X_gt = make_ground_truth()
     path = test_reconstruction(X_gt)
     test_ultrawide(X_gt)
+    test_imprecise_balls(X_gt)
     test_blender(path, X_gt)
     n_ok = sum(1 for v in RESULTS.values() if v[0])
     print(f"\n{n_ok}/{len(RESULTS)} tests réussis")

@@ -93,6 +93,22 @@ def native_fps(path):
     return min(STANDARD_FPS, key=lambda s: abs(s - fps))
 
 
+def sample_frames(path, n=30):
+    """n images réparties sur toute la vidéo."""
+    import cv2
+    info = video_info(path)
+    total = max(info["frames"], 1)
+    out = []
+    cap = cv2.VideoCapture(path)
+    for i in np.linspace(0, total - 1, min(n, total)).astype(int):
+        cap.set(cv2.CAP_PROP_POS_FRAMES, int(i))
+        ok, f = cap.read()
+        if ok:
+            out.append(f)
+    cap.release()
+    return out
+
+
 def median_frame(path, n=25):
     """Image médiane sur n images réparties : fait disparaître la personne
     qui bouge, il ne reste que le décor (et les boules au sol)."""

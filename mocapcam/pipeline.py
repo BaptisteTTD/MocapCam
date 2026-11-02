@@ -1,4 +1,5 @@
 """Enchaînement complet d'une prise."""
+import itertools
 import json
 import os
 import time
@@ -56,37 +57,141 @@ def _markers_for_solver(cfg):
     return [dict(m, position=m["position_3d"]) for m in cfg["markers"]]
 
 
+def _lens(meta, name):
+    return ((meta or {}).get("cameras", {}).get(name, {}) or {}).get("lens") or "wide"
+
+
+def _evaluate_layout(views, ml):
+    """Pose de chaque caméra pour une disposition donnée ; score total (plus bas = mieux)."""
+    total, poses = 0.0, []
+    for v in views:
+        try:
+            p = mk.solve_camera_pose(v["bg"], ml, v["K"], v["dist"], lens=v["lens"], cands=v["cands"])
+        except RuntimeError:
+            p = None
+        poses.append(p)
+        total += p["score"] if p else 100.0
+    return total, poses
+
+
+def _layout_ok(poses, max_rms=8.0):
+    # focale nominale (pas encore affinée) : quelques pixels d'écart restent normaux
+    return all(p is not None and p["rms"] <= max_rms for p in poses)
+
+
+FEMININE = {"vert": "verte", "bleu": "bleue", "violet": "violette"}
+
+
+def _boule(m):
+    return f"la boule {FEMININE.get(m['color'], m['color'])} ({m['name']})"
+
+
+def choose_layout(views, mlist, log=print, swaps=True):
+    """Disposition des boules qui explique le mieux toutes les caméras.
+
+    * telle que décrite dans studio.json, ou son symétrique (B et C de l'autre côté de la
+      ligne A-D : mêmes distances, seul le sens change) : pris en compte sans rien dire de plus ;
+    * deux boules de couleurs différentes échangées : retenu seulement si c'est nettement
+      mieux, avec un message pour l'utilisateur.
+    Retourne (marqueurs, poses, description) ; poses[i] vaut None si la caméra i échoue."""
+    base = []
+    for mir in (False, True):
+        ml = mk.mirrored(mlist) if mir else mlist
+        sc, ps = _evaluate_layout(views, ml)
+        base.append((sc, mir, ps, ml))
+    base.sort(key=lambda r: (round(r[0], 2), r[1]))
+    found = []
+    for i, j in itertools.combinations(range(len(mlist)) if swaps else [], 2):
+        if mlist[i]["color"] == mlist[j]["color"]:
+            continue
+        for mir in (False, True):
+            ml = mk.swapped(mlist, i, j)
+            ml = mk.mirrored(ml) if mir else ml
+            sc, ps = _evaluate_layout(views, ml)
+            found.append((sc, mir, ps, ml, (i, j)))
+    found.sort(key=lambda r: (round(r[0], 2), r[1]))   # à égalité : l'explication sans miroir
+    sc, mir, poses, ml = base[0]
+    if found and _layout_ok(found[0][2]) and (not _layout_ok(poses) or found[0][0] < 0.7 * sc):
+        sc, mir, poses, ml, (i, j) = found[0]
+        a, b = mlist[i], mlist[j]
+        log(f"  ATTENTION : {_boule(a)} et {_boule(b)} semblent échangées par rapport à studio.json. "
+            "Le traitement en tient compte ; vous pouvez les laisser ainsi.")
+        return ml, poses, f"{a['name']}<->{b['name']}" + (" miroir" if mir else "")
+    if mir and _layout_ok(poses):
+        log("  disposition des boules en miroir par rapport à studio.json (B et C de l'autre côté "
+            "de la ligne A-D) : prise en compte automatiquement")
+    return ml, poses, "miroir" if mir else "telle que décrite"
+
+
 def calibrate_extrinsics(cfg, studio_dir, norm_videos, work, log=print, meta=None):
-    cams = []
     mlist = _markers_for_solver(cfg)
-    vol = mk.volume_box(mlist, cfg["volume"]["margin"], cfg["volume"]["height"])
+    views = []
     for name, path in norm_videos.items():
         ipath = os.path.join(studio_dir, "intrinseques", f"{name}.json")
         info = video.video_info(path)
         bg = video.median_frame(path)
         cv2.imwrite(os.path.join(work, f"fond_{name}.jpg"), bg)
-        if os.path.exists(ipath):   # calibration au damier (optionnelle)
+        fixed = os.path.exists(ipath)   # calibration optique au damier (optionnelle)
+        if fixed:
             intr = intrinsics.scaled_to(intrinsics.load(ipath), info["width"], info["height"])
-            pose = mk.solve_camera_pose(bg, mlist, intr["K"], intr["dist"])
-            fixed = True
-        else:                       # sans damier : focale estimée avec les boules
-            lens = ((meta or {}).get("cameras", {}).get(name, {}) or {}).get("lens") or "wide"
-            pose = mk.solve_camera_pose(bg, mlist, lens=lens)
-            fixed = False
-        dbg = mk.draw_debug(bg, mlist, pose["K"], pose["dist"], pose, vol)
+            K, dist = intr["K"], intr["dist"]
+        else:                           # sans damier : focale de l'objectif, affinée ensuite
+            K, dist = None, None
+        frames = video.sample_frames(path, 30)
+        views.append(dict(name=name, info=info, bg=bg, K=K, dist=dist, fixed=fixed, lens=_lens(meta, name),
+                          cands=mk.find_candidates(bg, mlist, frames)))
+    mlist, poses, layout = choose_layout(views, mlist, log)
+    failed = [v["name"] for v, p in zip(views, poses) if p is None]
+    if failed:
+        raise RuntimeError(
+            f"Boules introuvables ou incohérentes pour : {', '.join(failed)}. Chaque caméra doit voir au "
+            "moins 4 boules, et leur disposition doit correspondre à studio.json (mêmes distances). "
+            f"Regardez fond_*.jpg dans {work}.")
+    # positions réellement utilisées (miroir / inversion) : reprises pour l'export
+    by_name = {m["name"]: m for m in mlist}
+    for m in cfg["markers"]:
+        m["position_3d"] = list(by_name[m["name"]]["position"])
+    vol = mk.volume_box(mlist, cfg["volume"]["margin"], cfg["volume"]["height"])
+    cams = []
+    for v, pose in zip(views, poses):
+        name, info = v["name"], v["info"]
+        dbg = mk.draw_debug(v["bg"], mlist, pose["K"], pose["dist"], pose, vol)
         cv2.imwrite(os.path.join(work, f"calibration_{name}.jpg"), dbg)
-        miss = f" (non vues : {', '.join(pose['missing'])})" if pose["missing"] else ""
-        src = "damier" if fixed else "estimée par les boules"
+        miss = f" (non utilisées : {', '.join(pose['missing'])})" if pose["missing"] else ""
+        if v["fixed"]:
+            src = "damier"
+        elif pose.get("aligned"):
+            src = "approximative : boules vues presque alignées"
+        else:
+            src = "estimée par les boules"
         log(f"  {name} : erreur {pose['rms']:.2f} px, focale {pose['K'][0, 0]:.0f} px ({src}), "
             f"caméra à ({pose['center'][0]:.2f}, {pose['center'][1]:.2f}, {pose['center'][2]:.2f}) m{miss}")
         if pose["rms"] > 4:
             log(f"  ATTENTION {name} : erreur élevée, vérifiez calibration_{name}.jpg")
+        f_nom = (v["K"] if v["K"] is not None else mk.default_K(info["width"], info["height"], v["lens"]))[0, 0]
         cams.append(dict(name=name, K=pose["K"], dist=np.asarray(pose["dist"], float), R=pose["R"],
                          t=np.asarray(pose["t"]), center=pose["center"], rms=pose["rms"],
                          width=info["width"], height=info["height"],
-                         marker_obs=pose["marker_obs"], intrinsics_fixed=fixed,
-                         lens=((meta or {}).get("cameras", {}).get(name, {}) or {}).get("lens") or "wide"))
+                         marker_obs=pose["marker_obs"], intrinsics_fixed=v["fixed"],
+                         lens=v["lens"], f_nominal=float(f_nom)))
     return cams, vol
+
+
+def actor_height(X):
+    """Taille approximative de l'acteur (m) d'après la longueur médiane des jambes
+    (hanche -> cheville ≈ 0,49 × la taille). Sert à repérer une erreur d'échelle :
+    distances entre boules de studio.json différentes de la réalité."""
+    J = {n: i for i, n in enumerate(JOINT_NAMES)}
+    legs = []
+    for side in ("l", "r"):
+        a = np.linalg.norm(X[:, J[f"{side}_hip"]] - X[:, J[f"{side}_knee"]], axis=1)
+        b = np.linalg.norm(X[:, J[f"{side}_knee"]] - X[:, J[f"{side}_ankle"]], axis=1)
+        legs.append(a + b)
+    leg = np.concatenate(legs)
+    leg = leg[np.isfinite(leg)]
+    if len(leg) < 10:
+        return None
+    return float(np.median(leg) / 0.49)
 
 
 def load_take_meta(take_dir):
@@ -251,6 +356,14 @@ def process_take(studio_dir, take_dir, force=False, manual_delays=None, only_cal
     stats["delays_s"] = dict(zip(norm.keys(), delays_s))
     stats["camera_fps"] = cam_fps
     stats["autocalibration"] = ac
+    h = actor_height(X)
+    stats["actor_height_m"] = h
+    if h is not None:
+        log(f"  taille estimée de l'acteur : {h:.2f} m")
+        if not 1.35 <= h <= 2.15:
+            log(f"  ATTENTION : taille peu plausible. Les distances entre boules de studio.json ne "
+                f"correspondent sans doute pas à la réalité (facteur ≈ {1.75 / h:.2f} si vous mesurez "
+                "environ 1,75 m). Mesurez-les au mètre ruban et corrigez studio.json.")
     name = os.path.basename(os.path.normpath(take_dir))
     out = export_motion(os.path.join(take_dir, f"{name}.mocap.json"), X, fps, cams, cfg, vol, stats)
     with open(os.path.join(work, "rapport.json"), "w", encoding="utf-8") as f:
