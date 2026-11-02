@@ -217,6 +217,13 @@ contrôler le résultat.
 * Pour réexporter votre personnage animé : **Exporter en FBX (Mixamo)** dans le même onglet,
   ou *Fichier > Exporter > FBX MocapCam (Mixamo)*.
 
+**Retarget depuis le FBX** (ou toute armature animée aux noms Mixamo) : importez le FBX de la prise
+et votre personnage dans la même scène, sélectionnez l'armature du personnage, puis dans l'onglet
+**MocapCam** choisissez la **Source** (l'armature du FBX) et cliquez **Transférer depuis une
+armature**. Les deux squelettes peuvent avoir des tailles, des poses de repos (T ou A), des échelles
+(0,01) et des orientations différentes : chaque os prend la même direction que dans la source, et
+le déplacement est mis à l'échelle du personnage.
+
 ## 9. Réglages avancés (`studio.json`)
 
 | Clé | Rôle |

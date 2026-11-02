@@ -437,6 +437,45 @@ def test_fbx(path):
        f"{os.path.getsize(dst) / 1e6:.1f} Mo")
 
 
+def test_transfer(path):
+    """Retarget armature -> armature : FBX MocapCam importé -> personnage Mixamo en A-pose,
+    échelle 0,01, tourné de 90°, plus petit (comme un perso téléchargé sur Mixamo)."""
+    import bpy
+    import mathutils
+    import mocapcam_blender as mb
+    src_fbx = os.path.join(OUT, "transfert_source.fbx")
+    mb.capture_to_fbx(path, src_fbx)
+    bpy.ops.wm.read_factory_settings(use_empty=True)
+    bpy.ops.import_scene.fbx(filepath=src_fbx)
+    src = [o for o in bpy.data.objects if o.type == "ARMATURE"][0]
+    sc = bpy.context.scene
+    sc.frame_start, sc.frame_end = (int(round(v)) for v in src.animation_data.action.frame_range)
+    sc.render.fps = FPS
+    _, J = mb.load_motion(path)
+    M = mathutils.Matrix.Rotation(math.radians(90), 4, "X") @ mathutils.Matrix.Scale(0.01, 4)
+    dst = mb.create_mixamo_armature(bpy.context, {k: v * 0.8 for k, v in J.items()}, name="Perso",
+                                    obj_matrix=M, pose="A")
+    rep = mb.transfer_motion(bpy.context, src, dst)
+    pairs = [("l_shoulder", "l_elbow"), ("l_elbow", "l_wrist"), ("r_elbow", "r_wrist"), ("l_hip", "l_knee"),
+             ("r_knee", "r_ankle"), ("lh_5", "lh_6"), ("rh_9", "rh_10"), ("lh_0", "lh_9")]
+    errs, hips = [], []
+    for f in range(sc.frame_start, sc.frame_end + 1, 5):
+        sc.frame_set(f)
+        a = mb.virtual_joints(src, mb.find_prefix(src), posed=True)
+        b = mb.virtual_joints(dst, mb.find_prefix(dst), posed=True)
+        for p, q in pairs:
+            u, v = a[q] - a[p], b[q] - b[p]
+            errs.append(math.degrees(math.acos(np.clip(np.dot(u, v) / np.linalg.norm(u) / np.linalg.norm(v), -1, 1))))
+        hips.append((a["l_hip"] + a["r_hip"], b["l_hip"] + b["r_hip"]))
+    e = np.array(errs)
+    H = np.array(hips) / 2
+    ratio = np.linalg.norm(np.ptp(H[:, 1, :2], 0)) / max(np.linalg.norm(np.ptp(H[:, 0, :2], 0)), 1e-9)
+    ok("retarget armature -> personnage Mixamo (A-pose, 0,01, 90°)",
+       np.median(e) < 0.5 and np.percentile(e, 95) < 2 and abs(ratio / 0.8 - 1) < 0.05,
+       f"{rep['animated']} os, directions : médiane {np.median(e):.2f}° (95 % < {np.percentile(e, 95):.2f}°), "
+       f"déplacement × {ratio:.2f} (tailles × 0,80)")
+
+
 # --------------------------------------------------------------------------- 5b. boules imprécises
 
 def test_imprecise_balls(X_gt):
@@ -645,6 +684,7 @@ if __name__ == "__main__":
     test_imprecise_balls(X_gt)
     test_blender(path, X_gt)
     test_fbx(path)
+    test_transfer(path)
     n_ok = sum(1 for v in RESULTS.values() if v[0])
     print(f"\n{n_ok}/{len(RESULTS)} tests réussis")
     with open(os.path.join(OUT, "resultats.json"), "w", encoding="utf-8") as f:

@@ -25,7 +25,7 @@ import os
 
 import bpy
 import numpy as np
-from bpy.props import BoolProperty, EnumProperty, IntProperty, StringProperty
+from bpy.props import BoolProperty, EnumProperty, IntProperty, PointerProperty, StringProperty
 from bpy_extras.io_utils import ExportHelper, ImportHelper
 from mathutils import Matrix, Vector
 
@@ -300,8 +300,9 @@ def _scale_from(J):
     return float(np.median(v)) if v.size else None
 
 
-def apply_motion(obj, J_mocap, fps, start_frame=1, root_mode="RELATIVE", action_name=None):
-    """Calcule et écrit l'animation sur l'armature obj (noms Mixamo, préfixe quelconque)."""
+def apply_motion(obj, J_mocap, fps, start_frame=1, root_mode="RELATIVE", action_name=None, clean=True):
+    """Calcule et écrit l'animation sur l'armature obj (noms Mixamo, préfixe quelconque).
+    clean=False : pas de lissage (source déjà propre, ex. une autre armature)."""
     prefix = find_prefix(obj)
     Jm = derive(dict(J_mocap))
     Jr = derive(virtual_joints(obj, prefix, posed=False))
@@ -330,7 +331,7 @@ def apply_motion(obj, J_mocap, fps, start_frame=1, root_mode="RELATIVE", action_
                 rv = np.isfinite(rm).all(-1) & (np.linalg.norm(np.nan_to_num(rm), axis=-1) > 1e-9)
                 if rv.any() and not rv.all():
                     rm = hold_fill(rm, rv)
-                if short in HAND_DRIVEN:
+                if clean and short in HAND_DRIVEN:
                     # la torsion vient des points de la main (petits, bruités) : lissée plus fort
                     # que la direction de l'os, qui vient du coude et du poignet (fiables)
                     if short.endswith("Hand"):
@@ -358,7 +359,8 @@ def apply_motion(obj, J_mocap, fps, start_frame=1, root_mode="RELATIVE", action_
             B = np.einsum("ij,tjk->tik", Rb.T, Mb)
         if delta is None and p is not None:
             continue  # os non piloté : on laisse sa pose de repos
-        q = clean_rotations(mat_to_quat(B), fps)
+        q = mat_to_quat(B)
+        q = clean_rotations(q, fps) if clean else continuous_quats(q)
         dp = f'pose.bones["{b.name}"].rotation_quaternion'
         for k in range(4):
             channels.append((dp, k, q[:, k], b.name))
@@ -514,6 +516,14 @@ def stable_twist(dm, rm, fps, cutoff=2.5, spike_deg=35.0, win=15):
         th = np.interp(t, gg, th[gg])
     th = lowpass(th[:, None], fps, cutoff)[:, 0]
     return np.cos(th)[:, None] * p + np.sin(th)[:, None] * w
+
+
+def continuous_quats(q):
+    q = np.array(q, float)
+    for i in range(1, len(q)):
+        if np.dot(q[i], q[i - 1]) < 0:
+            q[i] = -q[i]
+    return q
 
 
 def clean_rotations(q, fps, cutoff=8.0, spike_deg=20.0, win=7):
@@ -737,6 +747,40 @@ def create_point_empties(context, d, J, start_frame=1, coll_name="MocapCam_Point
     return coll
 
 
+# --------------------------------------------------------------------------- armature -> armature
+
+def armature_motion(context, src, frame_start, frame_end):
+    """Points équivalents à une capture (épaules, coudes, doigts…), image par image, depuis une
+    armature animée aux noms Mixamo (ex. un FBX MocapCam importé)."""
+    prefix = find_prefix(src)
+    sc = context.scene
+    back = sc.frame_current
+    frames = []
+    try:
+        for f in range(frame_start, frame_end + 1):
+            sc.frame_set(f)
+            frames.append(virtual_joints(src, prefix, posed=True))
+    finally:
+        sc.frame_set(back)
+    return {k: np.array([fr[k] for fr in frames]) for k in frames[0]}
+
+
+def transfer_motion(context, src, dst, root_mode="RELATIVE", start_frame=None, action_name=None):
+    """Retarget : l'animation de l'armature src est appliquée à l'armature dst (noms Mixamo,
+    préfixe, échelle, rotation et pose de repos quelconques, T-pose ou A-pose)."""
+    if src.animation_data is None or src.animation_data.action is None:
+        raise RuntimeError(f"L'armature « {src.name} » n'a pas d'animation.")
+    act = src.animation_data.action
+    f0, f1 = (int(round(v)) for v in act.frame_range)
+    J = armature_motion(context, src, f0, f1)
+    fps = context.scene.render.fps / context.scene.render.fps_base
+    name = action_name or act.name.split("|")[-1]
+    rep = apply_motion(dst, J, fps, f0 if start_frame is None else start_frame, root_mode,
+                       action_name=name, clean=False)
+    rep.update(frames=f1 - f0 + 1)
+    return rep
+
+
 # --------------------------------------------------------------------------- export FBX
 
 def _key_rest_pose(obj, frame):
@@ -917,6 +961,35 @@ class MOCAPCAM_OT_apply(bpy.types.Operator):
         return {"FINISHED"}
 
 
+class MOCAPCAM_OT_transfer(bpy.types.Operator):
+    """Transférer (retarget) l'animation d'une armature Mixamo/MocapCam sur l'armature active"""
+    bl_idname = "mocapcam.transfer_from_armature"
+    bl_label = "Transférer depuis une armature"
+    bl_options = {"REGISTER", "UNDO"}
+    root_mode: EnumProperty(name="Déplacement", items=ROOT_ITEMS, default="RELATIVE")
+
+    @classmethod
+    def poll(cls, context):
+        o, s = context.active_object, context.scene.mocapcam_source
+        return o is not None and o.type == "ARMATURE" and s is not None and s != o
+
+    def execute(self, context):
+        src, dst = context.scene.mocapcam_source, context.active_object
+        if context.mode != "OBJECT":
+            bpy.ops.object.mode_set(mode="OBJECT")
+        try:
+            rep = transfer_motion(context, src, dst, self.root_mode)
+        except RuntimeError as e:
+            self.report({"ERROR"}, str(e))
+            return {"CANCELLED"}
+        act = dst.animation_data.action
+        sc = context.scene
+        sc.frame_start, sc.frame_end = (int(round(v)) for v in act.frame_range)
+        self.report({"INFO"}, f"« {src.name} » -> « {dst.name} » : {rep['animated']} os animés, "
+                              f"{rep['frames']} images (échelle du déplacement {rep.get('scale', 1):.2f})")
+        return {"FINISHED"}
+
+
 class MOCAPCAM_OT_export_fbx(bpy.types.Operator, ExportHelper):
     """Exporter l'armature active et son animation en FBX (réglages Mixamo)"""
     bl_idname = "mocapcam.export_fbx"
@@ -951,6 +1024,11 @@ class MOCAPCAM_PT_panel(bpy.types.Panel):
         lay.separator()
         lay.prop(context.scene, "mocapcam_filepath", text="")
         lay.operator(MOCAPCAM_OT_apply.bl_idname, icon="ARMATURE_DATA")
+        lay.separator()
+        lay.label(text="Retarget depuis une armature animée :")
+        lay.prop_search(context.scene, "mocapcam_source", bpy.data, "objects", text="Source")
+        lay.operator(MOCAPCAM_OT_transfer.bl_idname, icon="ARMATURE_DATA")
+        lay.separator()
         lay.operator(MOCAPCAM_OT_export_fbx.bl_idname, icon="EXPORT")
         o = context.active_object
         if o is not None and o.type == "ARMATURE":
@@ -968,13 +1046,17 @@ def menu_export(self, context):
     self.layout.operator(MOCAPCAM_OT_export_fbx.bl_idname, text="FBX MocapCam (Mixamo)")
 
 
-CLASSES = (MOCAPCAM_OT_import, MOCAPCAM_OT_apply, MOCAPCAM_OT_export_fbx, MOCAPCAM_PT_panel)
+CLASSES = (MOCAPCAM_OT_import, MOCAPCAM_OT_apply, MOCAPCAM_OT_transfer, MOCAPCAM_OT_export_fbx,
+           MOCAPCAM_PT_panel)
 
 
 def register():
     for c in CLASSES:
         bpy.utils.register_class(c)
     bpy.types.Scene.mocapcam_filepath = StringProperty(name="Capture", subtype="FILE_PATH")
+    bpy.types.Scene.mocapcam_source = PointerProperty(
+        name="Source", type=bpy.types.Object, poll=lambda self, o: o.type == "ARMATURE",
+        description="Armature animée à recopier (ex. le FBX MocapCam importé)")
     bpy.types.TOPBAR_MT_file_import.append(menu_import)
     bpy.types.TOPBAR_MT_file_export.append(menu_export)
 
@@ -982,6 +1064,7 @@ def register():
 def unregister():
     bpy.types.TOPBAR_MT_file_export.remove(menu_export)
     bpy.types.TOPBAR_MT_file_import.remove(menu_import)
+    del bpy.types.Scene.mocapcam_source
     del bpy.types.Scene.mocapcam_filepath
     for c in reversed(CLASSES):
         bpy.utils.unregister_class(c)
