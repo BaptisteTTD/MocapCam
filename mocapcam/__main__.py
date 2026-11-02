@@ -4,7 +4,7 @@
   python -m mocapcam intrinseques STUDIO CAMERA VIDEO_DAMIER
   python -m mocapcam marqueurs   STUDIO DOSSIER_PRISE
   python -m mocapcam traiter     STUDIO DOSSIER_PRISE [--force] [--decalage poco=0.12]
-  python -m mocapcam fbx         PRISE.mocap.json|DOSSIER_PRISE [--blender CHEMIN] [--absolu]
+  python -m mocapcam fbx         DOSSIER_PRISE [--blender CHEMIN] [--absolu]
 """
 import argparse
 import os
@@ -37,7 +37,7 @@ def main(argv=None):
     p.add_argument("video")
 
     for name, hlp in (("marqueurs", "vérifie la détection des boules et la position des caméras"),
-                      ("traiter", "traite une prise complète -> fichier .mocap.json")):
+                      ("traiter", "traite une prise complète -> prise.fbx (squelette Mixamo animé)")):
         p = sub.add_parser(name, help=hlp)
         p.add_argument("studio")
         p.add_argument("prise")
@@ -46,7 +46,7 @@ def main(argv=None):
                        help="décalage manuel en secondes, ex. poco=0.120")
 
     p = sub.add_parser("fbx", help="crée le FBX (squelette Mixamo animé) d'une prise traitée")
-    p.add_argument("capture", help="fichier .mocap.json ou dossier de la prise")
+    p.add_argument("capture", help="dossier de la prise (déjà traitée)")
     p.add_argument("--blender", help="chemin de blender.exe (sinon recherche automatique)")
     p.add_argument("--absolu", action="store_true",
                    help="garder la position dans la zone de capture (sinon le perso part de l'origine)")
@@ -60,10 +60,11 @@ def main(argv=None):
             from . import fbx
             src = a.capture
             if os.path.isdir(src):
-                found = [f for f in os.listdir(src) if f.endswith(".mocap.json")]
+                found = [os.path.join(d, f) for d in (os.path.join(src, "mocapcam"), src) if os.path.isdir(d)
+                         for f in os.listdir(d) if f.endswith(".mocap.json")]
                 if not found:
-                    raise FileNotFoundError(f"Aucun .mocap.json dans {src} : traitez d'abord la prise.")
-                src = os.path.join(src, found[0])
+                    raise FileNotFoundError(f"Prise non traitée : {src}. Traitez-la d'abord.")
+                src = found[0]
             if not fbx.export(src, blender=a.blender, root_mode="ABSOLUTE" if a.absolu else "RELATIVE"):
                 return 1
         elif a.cmd == "init":

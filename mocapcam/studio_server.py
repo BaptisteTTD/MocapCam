@@ -145,7 +145,9 @@ class Studio:
             if not os.path.isdir(p) or d.startswith("_"):
                 continue
             vids = [f for f in os.listdir(p) if f.lower().endswith((".mp4", ".mov"))]
-            res = os.path.join(p, f"{d}.mocap.json")
+            fbx_file = os.path.join(p, f"{d}.fbx")
+            res = next((r for r in (fbx_file, os.path.join(p, "mocapcam", f"{d}.mocap.json"),
+                                    os.path.join(p, f"{d}.mocap.json")) if os.path.exists(r)), fbx_file)
             meta = {}
             if os.path.exists(os.path.join(p, "take.json")):
                 try:
@@ -155,7 +157,7 @@ class Studio:
                     pass
             out.append(dict(name=d, videos=vids, processed=os.path.exists(res),
                             result=res if os.path.exists(res) else None,
-                            fbx=os.path.exists(os.path.join(p, f"{d}.fbx")),
+                            fbx=os.path.exists(fbx_file),
                             created=meta.get("created"), duration=meta.get("duration_s")))
         return out[:50]
 

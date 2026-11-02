@@ -1,12 +1,11 @@
 bl_info = {
     "name": "MocapCam",
     "author": "MocapCam",
-    "version": (0, 2, 0),
+    "version": (0, 3, 0),
     "blender": (3, 6, 0),
-    "location": "Fichier > Importer > MocapCam (.mocap.json)  |  Fichier > Exporter > FBX MocapCam (Mixamo)"
-                "  |  Vue 3D > barre latérale (N) > MocapCam",
-    "description": "Importe une capture MocapCam : squelette Mixamo (corps + doigts) "
-                   "et application directe sur un personnage Mixamo",
+    "location": "Vue 3D > barre latérale (N) > MocapCam  |  Fichier > Importer > Animation MocapCam (.fbx)",
+    "description": "Importe une animation MocapCam (FBX, squelette Mixamo) et la transfère (retarget) "
+                   "sur n'importe quelle armature aux noms Mixamo",
     "category": "Animation",
 }
 
@@ -25,7 +24,7 @@ import os
 
 import bpy
 import numpy as np
-from bpy.props import BoolProperty, EnumProperty, IntProperty, PointerProperty, StringProperty
+from bpy.props import BoolProperty, EnumProperty, PointerProperty, StringProperty
 from bpy_extras.io_utils import ExportHelper, ImportHelper
 from mathutils import Matrix, Vector
 
@@ -689,64 +688,6 @@ def create_mixamo_armature(context, J, name="MocapCam_Squelette", obj_matrix=Non
     return obj
 
 
-# --------------------------------------------------------------------------- aides visuelles
-
-def create_helpers(context, d, coll_name="MocapCam_Scene"):
-    coll = bpy.data.collections.get(coll_name) or bpy.data.collections.new(coll_name)
-    if coll.name not in context.scene.collection.children:
-        context.scene.collection.children.link(coll)
-    for c in d.get("cameras", []):
-        cam = bpy.data.cameras.new(f"Cam_{c['name']}")
-        cam.sensor_fit = "HORIZONTAL"
-        cam.sensor_width = 36.0
-        cam.lens = c["K"][0][0] * 36.0 / c["width"]
-        o = bpy.data.objects.new(f"Cam_{c['name']}", cam)
-        R = np.array(c["R"])
-        t = np.array(c["t"])
-        Rc = R.T @ np.diag([1.0, -1.0, -1.0])
-        M = np.eye(4)
-        M[:3, :3] = Rc
-        M[:3, 3] = -R.T @ t
-        o.matrix_world = Matrix(M.tolist())
-        coll.objects.link(o)
-    for m in d.get("markers", []):
-        e = bpy.data.objects.new(f"Boule_{m['name']}_{m['color']}", None)
-        e.empty_display_type = "SPHERE"
-        e.empty_display_size = 0.04
-        e.location = m["position"]
-        coll.objects.link(e)
-    v = d.get("volume")
-    if v:
-        lo, hi = np.array(v["min"]), np.array(v["max"])
-        e = bpy.data.objects.new("Volume_capture", None)
-        e.empty_display_type = "CUBE"
-        e.location = ((lo + hi) / 2).tolist()
-        e.scale = ((hi - lo) / 2).tolist()
-        coll.objects.link(e)
-    return coll
-
-
-def create_point_empties(context, d, J, start_frame=1, coll_name="MocapCam_Points"):
-    coll = bpy.data.collections.get(coll_name) or bpy.data.collections.new(coll_name)
-    if coll.name not in context.scene.collection.children:
-        context.scene.collection.children.link(coll)
-    names = [n for n in d["joint_names"] if not n.startswith("face_")]
-    for n in names:
-        e = bpy.data.objects.new(f"pt_{n}", None)
-        e.empty_display_type = "SPHERE"
-        e.empty_display_size = 0.012 if n[:3] in ("lh_", "rh_") else 0.03
-        coll.objects.link(e)
-        X = J[n]
-        ok = np.isfinite(X).all(1)
-        if not ok.any():
-            continue
-        idx = np.where(ok)[0]
-        Xf = np.stack([np.interp(np.arange(len(X)), idx, X[idx, k]) for k in range(3)], 1)
-        write_action(e, f"pt_{n}", start_frame,
-                     [("location", k, Xf[:, k], "Location") for k in range(3)])
-    return coll
-
-
 # --------------------------------------------------------------------------- armature -> armature
 
 def armature_motion(context, src, frame_start, frame_end):
@@ -874,7 +815,7 @@ def main_cli():
 
 # --------------------------------------------------------------------------- interface
 
-ROOT_ITEMS = [("RELATIVE", "Relatif", "Le perso démarre à sa position actuelle"),
+ROOT_ITEMS = [("RELATIVE", "Relatif", "Le personnage démarre à sa position actuelle"),
               ("ABSOLUTE", "Absolu", "Positions de la zone de capture (origine = boule A)")]
 
 
@@ -886,95 +827,77 @@ def _setup_scene(context, d, start):
     sc.frame_end = start + d["frame_count"] - 1
 
 
-class MOCAPCAM_OT_import(bpy.types.Operator, ImportHelper):
-    """Importer une capture MocapCam"""
-    bl_idname = "mocapcam.import_capture"
-    bl_label = "Importer MocapCam"
+def _is_armature(self, o):
+    return o.type == "ARMATURE"
+
+
+def import_animation(context, filepath):
+    """Importe un FBX d'animation (MocapCam ou Mixamo) ; renvoie l'armature animée."""
+    if context.mode != "OBJECT":
+        bpy.ops.object.mode_set(mode="OBJECT")
+    before = set(bpy.data.objects)
+    bpy.ops.import_scene.fbx(filepath=filepath, use_anim=True, ignore_leaf_bones=False,
+                             automatic_bone_orientation=False)
+    new = [o for o in bpy.data.objects if o not in before]
+    arms = [o for o in new if o.type == "ARMATURE"]
+    if not arms:
+        raise RuntimeError("Aucune armature dans ce FBX.")
+    arm = max(arms, key=lambda o: len(o.data.bones))
+    find_prefix(arm)                                # vérifie les noms Mixamo
+    arm.name = os.path.splitext(os.path.basename(filepath))[0]
+    ad = arm.animation_data
+    if ad and ad.action:
+        f0, f1 = (int(round(v)) for v in ad.action.frame_range)
+        context.scene.frame_start, context.scene.frame_end = f0, f1
+        ad.action.use_fake_user = True
+    return arm
+
+
+class MOCAPCAM_OT_import_fbx(bpy.types.Operator, ImportHelper):
+    """Importer une animation MocapCam (.fbx, squelette Mixamo)"""
+    bl_idname = "mocapcam.import_fbx"
+    bl_label = "Importer une animation (.fbx)"
     bl_options = {"REGISTER", "UNDO"}
-    filename_ext = ".json"
-    filter_glob: StringProperty(default="*.json", options={"HIDDEN"})
-    create_skeleton: BoolProperty(name="Créer le squelette Mixamo", default=True)
-    apply_active: BoolProperty(name="Appliquer aussi à l'armature active", default=False,
-                               description="Si une armature Mixamo est sélectionnée")
-    create_scene: BoolProperty(name="Caméras, boules et volume", default=True)
-    create_points: BoolProperty(name="Points bruts (débogage)", default=False)
-    root_mode: EnumProperty(name="Déplacement", items=ROOT_ITEMS, default="RELATIVE")
-    start_frame: IntProperty(name="Image de départ", default=1)
+    filename_ext = ".fbx"
+    filter_glob: StringProperty(default="*.fbx", options={"HIDDEN"})
 
     def execute(self, context):
         try:
-            d, J = load_motion(self.filepath)
-        except Exception as e:
-            self.report({"ERROR"}, f"Lecture impossible : {e}")
+            arm = import_animation(context, self.filepath)
+        except (RuntimeError, OSError) as e:
+            self.report({"ERROR"}, f"Import impossible : {e}")
             return {"CANCELLED"}
-        target = context.active_object if self.apply_active else None
-        if context.mode != "OBJECT":
-            bpy.ops.object.mode_set(mode="OBJECT")
-        context.scene.mocapcam_filepath = self.filepath
-        _setup_scene(context, d, self.start_frame)
-        if self.create_scene:
-            create_helpers(context, d)
-        if self.create_points:
-            create_point_empties(context, d, J, self.start_frame)
-        if self.create_skeleton:
-            name = os.path.basename(self.filepath).replace(".mocap.json", "").replace(".json", "")
-            arm = create_mixamo_armature(context, J, name=f"MocapCam_{name}")
-            rep = apply_motion(arm, J, d["fps"], self.start_frame, self.root_mode,
-                               action_name=f"MocapCam_{name}")
-            self.report({"INFO"}, f"Squelette créé : {rep['animated']} os animés")
-        if target is not None and target.type == "ARMATURE":
-            try:
-                apply_motion(target, J, d["fps"], self.start_frame, self.root_mode)
-            except RuntimeError as e:
-                self.report({"WARNING"}, str(e))
+        sc = context.scene
+        sc.mocapcam_source = arm
+        tgt = sc.mocapcam_target
+        if tgt is None or tgt == arm:
+            sc.mocapcam_target = next((o for o in context.view_layer.objects if o.type == "ARMATURE"
+                                       and o != arm and o.name in context.view_layer.objects), None)
+        act = arm.animation_data.action if arm.animation_data else None
+        n = int(round(act.frame_range[1] - act.frame_range[0])) + 1 if act else 0
+        self.report({"INFO"}, f"« {arm.name} » importée : {n} images à {sc.render.fps} i/s")
         return {"FINISHED"}
 
 
-class MOCAPCAM_OT_apply(bpy.types.Operator):
-    """Appliquer la capture à l'armature active (noms d'os Mixamo)"""
-    bl_idname = "mocapcam.apply_active"
-    bl_label = "Appliquer à l'armature active"
+class MOCAPCAM_OT_retarget(bpy.types.Operator):
+    """Transférer l'animation de la source sur l'armature cible (noms d'os Mixamo)"""
+    bl_idname = "mocapcam.retarget"
+    bl_label = "Retarget"
     bl_options = {"REGISTER", "UNDO"}
     root_mode: EnumProperty(name="Déplacement", items=ROOT_ITEMS, default="RELATIVE")
-    start_frame: IntProperty(name="Image de départ", default=1)
+    hide_source: BoolProperty(name="Cacher la source", default=True)
 
     @classmethod
     def poll(cls, context):
-        o = context.active_object
-        return o is not None and o.type == "ARMATURE"
+        sc = context.scene
+        s, t = sc.mocapcam_source, sc.mocapcam_target
+        return (s is not None and t is not None and s != t and s.type == "ARMATURE"
+                and t.type == "ARMATURE" and s.animation_data is not None
+                and s.animation_data.action is not None)
 
     def execute(self, context):
-        path = bpy.path.abspath(context.scene.mocapcam_filepath)
-        if not os.path.exists(path):
-            self.report({"ERROR"}, "Choisissez d'abord un fichier .mocap.json")
-            return {"CANCELLED"}
-        if context.mode != "OBJECT":
-            bpy.ops.object.mode_set(mode="OBJECT")
-        d, J = load_motion(path)
-        _setup_scene(context, d, self.start_frame)
-        try:
-            rep = apply_motion(context.active_object, J, d["fps"], self.start_frame, self.root_mode)
-        except RuntimeError as e:
-            self.report({"ERROR"}, str(e))
-            return {"CANCELLED"}
-        self.report({"INFO"}, f"{rep['animated']} os animés (échelle {rep.get('scale', 1):.2f})")
-        return {"FINISHED"}
-
-
-class MOCAPCAM_OT_transfer(bpy.types.Operator):
-    """Transférer (retarget) l'animation d'une armature Mixamo/MocapCam sur l'armature active"""
-    bl_idname = "mocapcam.transfer_from_armature"
-    bl_label = "Transférer depuis une armature"
-    bl_options = {"REGISTER", "UNDO"}
-    root_mode: EnumProperty(name="Déplacement", items=ROOT_ITEMS, default="RELATIVE")
-
-    @classmethod
-    def poll(cls, context):
-        o, s = context.active_object, context.scene.mocapcam_source
-        return o is not None and o.type == "ARMATURE" and s is not None and s != o
-
-    def execute(self, context):
-        src, dst = context.scene.mocapcam_source, context.active_object
+        sc = context.scene
+        src, dst = sc.mocapcam_source, sc.mocapcam_target
         if context.mode != "OBJECT":
             bpy.ops.object.mode_set(mode="OBJECT")
         try:
@@ -983,17 +906,23 @@ class MOCAPCAM_OT_transfer(bpy.types.Operator):
             self.report({"ERROR"}, str(e))
             return {"CANCELLED"}
         act = dst.animation_data.action
-        sc = context.scene
+        act.use_fake_user = True
         sc.frame_start, sc.frame_end = (int(round(v)) for v in act.frame_range)
+        if self.hide_source:
+            src.hide_set(True)
+        for o in context.view_layer.objects:
+            o.select_set(False)
+        dst.select_set(True)
+        context.view_layer.objects.active = dst
         self.report({"INFO"}, f"« {src.name} » -> « {dst.name} » : {rep['animated']} os animés, "
-                              f"{rep['frames']} images (échelle du déplacement {rep.get('scale', 1):.2f})")
+                              f"{rep['frames']} images (déplacement × {rep.get('scale', 1):.2f})")
         return {"FINISHED"}
 
 
 class MOCAPCAM_OT_export_fbx(bpy.types.Operator, ExportHelper):
-    """Exporter l'armature active et son animation en FBX (réglages Mixamo)"""
+    """Exporter l'armature active et son animation en FBX (réglages Mixamo, repos en T-pose)"""
     bl_idname = "mocapcam.export_fbx"
-    bl_label = "Exporter en FBX (Mixamo)"
+    bl_label = "Exporter en FBX"
     filename_ext = ".fbx"
     filter_glob: StringProperty(default="*.fbx", options={"HIDDEN"})
 
@@ -1012,6 +941,16 @@ class MOCAPCAM_OT_export_fbx(bpy.types.Operator, ExportHelper):
         return {"FINISHED"}
 
 
+def _prefix_label(lay, o):
+    if o is None:
+        return
+    try:
+        p = find_prefix(o)
+        lay.label(text=f"os Mixamo, préfixe « {p} »", icon="CHECKMARK")
+    except RuntimeError:
+        lay.label(text="pas de noms d'os Mixamo", icon="ERROR")
+
+
 class MOCAPCAM_PT_panel(bpy.types.Panel):
     bl_label = "MocapCam"
     bl_space_type = "VIEW_3D"
@@ -1019,44 +958,41 @@ class MOCAPCAM_PT_panel(bpy.types.Panel):
     bl_category = "MocapCam"
 
     def draw(self, context):
+        sc = context.scene
         lay = self.layout
-        lay.operator(MOCAPCAM_OT_import.bl_idname, icon="IMPORT")
-        lay.separator()
-        lay.prop(context.scene, "mocapcam_filepath", text="")
-        lay.operator(MOCAPCAM_OT_apply.bl_idname, icon="ARMATURE_DATA")
-        lay.separator()
-        lay.label(text="Retarget depuis une armature animée :")
-        lay.prop_search(context.scene, "mocapcam_source", bpy.data, "objects", text="Source")
-        lay.operator(MOCAPCAM_OT_transfer.bl_idname, icon="ARMATURE_DATA")
+        box = lay.box()
+        box.label(text="1. Animation", icon="ARMATURE_DATA")
+        box.operator(MOCAPCAM_OT_import_fbx.bl_idname, icon="IMPORT")
+        box.prop(sc, "mocapcam_source", text="Source")
+        box = lay.box()
+        box.label(text="2. Personnage", icon="OUTLINER_OB_ARMATURE")
+        box.prop(sc, "mocapcam_target", text="Cible")
+        _prefix_label(box, sc.mocapcam_target)
+        box.operator(MOCAPCAM_OT_retarget.bl_idname, icon="PLAY")
         lay.separator()
         lay.operator(MOCAPCAM_OT_export_fbx.bl_idname, icon="EXPORT")
-        o = context.active_object
-        if o is not None and o.type == "ARMATURE":
-            try:
-                lay.label(text=f"Préfixe détecté : '{find_prefix(o)}'", icon="CHECKMARK")
-            except RuntimeError:
-                lay.label(text="Pas de noms d'os Mixamo", icon="ERROR")
 
 
 def menu_import(self, context):
-    self.layout.operator(MOCAPCAM_OT_import.bl_idname, text="MocapCam (.mocap.json)")
+    self.layout.operator(MOCAPCAM_OT_import_fbx.bl_idname, text="Animation MocapCam (.fbx)")
 
 
 def menu_export(self, context):
     self.layout.operator(MOCAPCAM_OT_export_fbx.bl_idname, text="FBX MocapCam (Mixamo)")
 
 
-CLASSES = (MOCAPCAM_OT_import, MOCAPCAM_OT_apply, MOCAPCAM_OT_transfer, MOCAPCAM_OT_export_fbx,
-           MOCAPCAM_PT_panel)
+CLASSES = (MOCAPCAM_OT_import_fbx, MOCAPCAM_OT_retarget, MOCAPCAM_OT_export_fbx, MOCAPCAM_PT_panel)
 
 
 def register():
     for c in CLASSES:
         bpy.utils.register_class(c)
-    bpy.types.Scene.mocapcam_filepath = StringProperty(name="Capture", subtype="FILE_PATH")
     bpy.types.Scene.mocapcam_source = PointerProperty(
-        name="Source", type=bpy.types.Object, poll=lambda self, o: o.type == "ARMATURE",
-        description="Armature animée à recopier (ex. le FBX MocapCam importé)")
+        name="Source", type=bpy.types.Object, poll=_is_armature,
+        description="Armature animée (ex. le FBX MocapCam importé)")
+    bpy.types.Scene.mocapcam_target = PointerProperty(
+        name="Cible", type=bpy.types.Object, poll=_is_armature,
+        description="Armature du personnage qui reçoit l'animation")
     bpy.types.TOPBAR_MT_file_import.append(menu_import)
     bpy.types.TOPBAR_MT_file_export.append(menu_export)
 
@@ -1064,8 +1000,8 @@ def register():
 def unregister():
     bpy.types.TOPBAR_MT_file_export.remove(menu_export)
     bpy.types.TOPBAR_MT_file_import.remove(menu_import)
+    del bpy.types.Scene.mocapcam_target
     del bpy.types.Scene.mocapcam_source
-    del bpy.types.Scene.mocapcam_filepath
     for c in reversed(CLASSES):
         bpy.utils.unregister_class(c)
 

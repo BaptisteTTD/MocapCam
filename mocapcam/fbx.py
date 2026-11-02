@@ -55,9 +55,13 @@ def export(mocap_json, fbx_path=None, blender=None, root_mode="RELATIVE", log=pr
     exe = find_blender(blender)
     if not exe:
         log("  FBX non créé : Blender introuvable. Indiquez son chemin dans studio.json "
-            '(clé "blender"), ou importez le .mocap.json dans Blender avec l\'add-on.')
+            '(clé "blender"), puis lancez : mocapcam fbx <dossier de la prise>.')
         return None
-    fbx_path = fbx_path or re.sub(r"(\.mocap)?\.json$", "", mocap_json) + ".fbx"
+    if not fbx_path:
+        d, f = os.path.split(os.path.abspath(mocap_json))
+        if os.path.basename(d) == "mocapcam":            # données de travail -> FBX dans la prise
+            d = os.path.dirname(d)
+        fbx_path = os.path.join(d, re.sub(r"(\.mocap)?\.json$", "", f) + ".fbx")
     cmd = [exe, "-b", "--factory-startup", "--python-exit-code", "1", "--python", ADDON,
            "--", os.path.abspath(mocap_json), os.path.abspath(fbx_path), root_mode]
     try:

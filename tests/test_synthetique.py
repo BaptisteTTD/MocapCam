@@ -609,21 +609,24 @@ def test_blender(path, X_gt):
     mb.register()
     d, J = mb.load_motion(path)
     T = d["frame_count"]
-    # (a) via l'opérateur d'import (squelette généré + caméras + boules)
-    bpy.context.scene.mocapcam_filepath = path
-    res = bpy.ops.mocapcam.import_capture(filepath=path, create_points=True)
-    gen = [o for o in bpy.data.objects if o.type == "ARMATURE"][0]
-    # (b) squelette en A-pose
+    # (a) le FBX produit par le traitement, importé avec l'opérateur de l'add-on
+    fbx_path = os.path.join(OUT, "prise_test.fbx")
+    mb.capture_to_fbx(path, fbx_path)
+    bpy.ops.wm.read_factory_settings(use_empty=True)
+    res = bpy.ops.mocapcam.import_fbx(filepath=fbx_path)
+    gen = bpy.context.scene.mocapcam_source
+    assert res == {"FINISHED"} and gen is not None and gen.name == "prise_test"
+    # (b) personnage en A-pose : retarget avec l'opérateur
     apose = mb.create_mixamo_armature(bpy.context, J, name="Apose", pose="A")
     apose.location = (4, 0, 0)
-    mb.apply_motion(apose, J, FPS)
+    bpy.context.scene.mocapcam_target = apose
+    assert bpy.ops.mocapcam.retarget(hide_source=False) == {"FINISHED"}
     # (c) façon FBX Mixamo : objet tourné de 90° sur X, échelle 0.01, autres proportions
     M = mathutils.Matrix.Translation((-3, 0, 0)) @ mathutils.Matrix.Rotation(math.radians(90), 4, "X") @ mathutils.Matrix.Scale(0.01, 4)
     Jbig = {k: v * 1.15 for k, v in J.items()}
     fbx = mb.create_mixamo_armature(bpy.context, Jbig, name="FBXlike", obj_matrix=M)
-    for b in fbx.data.bones:      # préfixe différent comme certains exports
-        pass
-    mb.apply_motion(fbx, J, FPS)
+    bpy.context.scene.mocapcam_target = fbx
+    assert bpy.ops.mocapcam.retarget(hide_source=False) == {"FINISHED"}
 
     check = ["l_wrist", "r_wrist", "l_ankle", "r_ankle", "l_elbow", "r_knee", "nose",
              "lh_8", "lh_4", "rh_12", "rh_20", "l_big_toe"]
@@ -636,7 +639,8 @@ def test_blender(path, X_gt):
 
     body_pairs = [p for p in dir_pairs if not p[0].startswith(("lh_", "rh_"))]
     finger_pairs = [p for p in dir_pairs if p[0].startswith(("lh_", "rh_"))]
-    for arm, label in ((gen, "squelette généré"), (apose, "squelette A-pose"), (fbx, "squelette type FBX Mixamo")):
+    for arm, label in ((gen, "FBX importé"), (apose, "retarget vers un perso en A-pose"),
+                       (fbx, "retarget vers un perso Mixamo (0,01, 90°)")):
         pos_err = []
         fid = {"corps": [], "doigts": []}      # Blender vs points capturés (fidélité de l'add-on)
         tot = {"corps": [], "doigts": []}      # Blender vs mouvement réel (bilan complet)

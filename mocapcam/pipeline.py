@@ -359,7 +359,7 @@ def process_take(studio_dir, take_dir, force=False, manual_delays=None, only_cal
         f"erreur médiane {stats['median_reproj_px'] or float('nan'):.1f} px, "
         f"inversions gauche/droite corrigées : {stats['lr_swaps_fixed']}")
 
-    log("6/6 Nettoyage, lissage et export (.mocap.json + .fbx)…")
+    log("6/6 Nettoyage, lissage et export FBX…")
     X = triangulate.postprocess(X, fps, cfg["filtering"])
     T0 = X.shape[0]
     X, first = triangulate.trim_take(X, fps)
@@ -383,11 +383,17 @@ def process_take(studio_dir, take_dir, force=False, manual_delays=None, only_cal
                 f"correspondent sans doute pas à la réalité (facteur ≈ {1.75 / h:.2f} si vous mesurez "
                 "environ 1,75 m). Mesurez-les au mètre ruban et corrigez studio.json.")
     name = os.path.basename(os.path.normpath(take_dir))
-    out = export_motion(os.path.join(take_dir, f"{name}.mocap.json"), X, fps, cams, cfg, vol, stats)
+    # points 3D bruts : données de travail (dans mocapcam/), d'où est tiré le FBX
+    out = export_motion(os.path.join(work, f"{name}.mocap.json"), X, fps, cams, cfg, vol, stats)
+    old = os.path.join(take_dir, f"{name}.mocap.json")      # ancien emplacement
+    if os.path.exists(old):
+        os.remove(old)
     with open(os.path.join(work, "rapport.json"), "w", encoding="utf-8") as f:
         json.dump(stats, f, indent=2, default=_jsonable)
+    result = out
     if cfg.get("fbx", True):
-        fbx.export(out, blender=cfg.get("blender") or None, log=log)
-    log(f"Terminé en {time.time() - t0:.0f} s -> {out}")
+        result = fbx.export(out, os.path.join(take_dir, f"{name}.fbx"),
+                            blender=cfg.get("blender") or None, log=log) or out
+    log(f"Terminé en {time.time() - t0:.0f} s -> {result}")
     log(f"  couverture corps {stats['coverage_body'] * 100:.0f} %, mains {stats['coverage_hands'] * 100:.0f} %")
-    return out
+    return result

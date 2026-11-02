@@ -74,7 +74,7 @@ with open(fake, "w") as f:
 os.chmod(fake, 0o755)
 os.environ["BLENDER"] = fake
 out = run("traiter", studio, take)
-res = os.path.join(take, "prise1.mocap.json")
+res = os.path.join(take, "mocapcam", "prise1.mocap.json")
 assert os.path.exists(res)
 assert "FBX :" in out and os.path.exists(os.path.join(take, "prise1.fbx")), "FBX non créé"
 print("OK FBX :", os.path.join(take, "prise1.fbx"), f"{os.path.getsize(os.path.join(take, 'prise1.fbx')) / 1e6:.1f} Mo")

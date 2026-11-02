@@ -8,14 +8,14 @@ Trois éléments :
   objectif ×1, stabilisation coupée, exposition bloquée) ;
 * **MocapCam Studio** sur le PC : vous y voyez les caméras, vérifiez les boules, lancez et
   arrêtez l'enregistrement de tous les téléphones d'un clic, et les vidéos arrivent toutes seules ;
-* **l'add-on Blender**, pour importer l'animation ou l'appliquer à votre personnage.
+* **l'add-on Blender**, pour importer l'animation (FBX) et la transférer sur votre personnage.
 
 ```
 iPhone + Poco ─► calage par le bip du PC ─► position + objectif des caméras grâce aux boules au sol
               ─► détection 2D corps + mains (IA RTMW) ─► synchro fine par le mouvement
               ─► affinage des caméras avec le corps
               ─► triangulation 3D ─► lissage
-              ─► prise.mocap.json + prise.fbx (squelette Mixamo animé)
+              ─► prise.fbx (squelette Mixamo animé) ─► add-on Blender : retarget sur votre personnage
 ```
 
 ---
@@ -158,9 +158,9 @@ de l'estimation automatique.
    est statique), puis **■ Arrêter**. Les vidéos sont envoyées automatiquement au PC, dans
    `captures\prise_XXX\`.
 6. Dans la liste **Prises**, cliquez **Traiter**. Le déroulement s'affiche dans le panneau
-   *Traitement*. Résultats, dans `captures\prise_XXX\` :
-   * **`prise_XXX.fbx`** : l'animation sur un squelette Mixamo (voir section 8) ;
-   * `prise_XXX.mocap.json` : les points 3D bruts, pour l'add-on Blender.
+   *Traitement*. Le résultat est **`captures\prise_XXX\prise_XXX.fbx`** : l'animation sur un
+   squelette Mixamo (voir section 8). Le sous-dossier `mocapcam\` contient les données de
+   travail (vidéos normalisées, détections, contrôles), inutiles pour l'utilisation.
 
 ## 7. Sans l'app : vidéos filmées à la main
 
@@ -203,26 +203,21 @@ Utilisation :
 Pour refaire un FBX : `mocapcam fbx captures\prise_XXX` (ou `--blender "C:\...\blender.exe"`
 si Blender n'est pas trouvé ; le chemin peut aussi être mis dans `studio.json`, clé `blender`).
 
-**Dans Blender, avec l'add-on** : *Fichier > Importer > MocapCam (.mocap.json)* crée le même
-squelette, plus les caméras à leur vraie position, les boules et le volume de capture, pour
-contrôler le résultat.
+**Dans Blender, avec l'add-on MocapCam** (barre latérale, touche N > onglet **MocapCam**) :
+1. **Animation** : *Importer une animation (.fbx)* (aussi dans *Fichier > Importer > Animation
+   MocapCam (.fbx)*). Le squelette animé apparaît, nommé comme la prise, et devient la **Source**.
+   La cadence et la plage d'images de la scène sont réglées toutes seules.
+2. **Personnage** : choisissez la **Cible**, l'armature de votre personnage (par exemple
+   « Armature » pour un personnage téléchargé sur Mixamo), puis cliquez **Retarget**.
+   * Chaque os du personnage prend la même direction que dans l'animation ; le préfixe
+     (`mixamorig:`, `mixamorig1:`…), l'échelle 0,01, la rotation de l'objet et la pose de
+     repos (T-pose ou A-pose) sont gérés.
+   * Le déplacement est mis à l'échelle du personnage. En mode *Relatif* (par défaut), il part
+     de sa position actuelle ; en mode *Absolu*, il suit la zone de capture.
+   * La source est cachée ensuite (case *Cacher la source*), son animation reste disponible.
+3. **Exporter en FBX** : le personnage animé, avec la pose de repos de son armature.
 
-**Appliquer à votre personnage Mixamo** : sélectionnez son armature, puis ouvrez la barre latérale
-(touche N) > onglet **MocapCam** > **Appliquer à l'armature active**.
-* Ça marche directement avec un FBX téléchargé sur Mixamo, sans retargeting : le préfixe
-  (`mixamorig:`, `mixamorig1:`…) est détecté, et l'échelle 0,01, la rotation de l'objet et
-  la pose de repos (T-pose ou A-pose) sont gérées.
-* Le déplacement est mis à l'échelle du personnage. En mode *Relatif*, le personnage part de sa
-  position actuelle. En mode *Absolu*, il suit les coordonnées de la zone de capture.
-* Pour réexporter votre personnage animé : **Exporter en FBX (Mixamo)** dans le même onglet,
-  ou *Fichier > Exporter > FBX MocapCam (Mixamo)*.
-
-**Retarget depuis le FBX** (ou toute armature animée aux noms Mixamo) : importez le FBX de la prise
-et votre personnage dans la même scène, sélectionnez l'armature du personnage, puis dans l'onglet
-**MocapCam** choisissez la **Source** (l'armature du FBX) et cliquez **Transférer depuis une
-armature**. Les deux squelettes peuvent avoir des tailles, des poses de repos (T ou A), des échelles
-(0,01) et des orientations différentes : chaque os prend la même direction que dans la source, et
-le déplacement est mis à l'échelle du personnage.
+Le retarget marche avec n'importe quelle animation au squelette Mixamo, pas seulement MocapCam.
 
 ## 9. Réglages avancés (`studio.json`)
 
