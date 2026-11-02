@@ -185,6 +185,7 @@ function camCard(c) {
       <span>${esc(c.platform)} ${esc(c.device || c.model || '')}</span>
       <span>i/s <b class="${fpsCls}">${c.fps ?? '?'}</b></span>
       <span>format <b class="${c.res720 ? 'mid' : ''}">${fmtRes(c.resolution)}</b></span>
+      <span>objectif <b>${c.lens === 'ultra' ? '×0,5' : '×1'}</b></span>
       <span>stabilisation <b class="${stabCls}">${esc(c.stabilization ?? '?')}</b></span>
       <span title="précision de la mise à l'heure ; la synchro finale se fait au bip, à moins d'1 ms">horloge <b class="${syncClass(c.sync_ms)}">${c.sync_ms != null ? '±' + c.sync_ms + ' ms' : '…'}</b></span>
       <span>batterie <b class="${batCls}">${bat}</b></span>
@@ -195,6 +196,8 @@ function camCard(c) {
     <div style="padding:0 12px">${up}</div>
     <div class="actions">
       <button onclick="send({a:'identify', cam:'${c.id}'})">Identifier</button>
+      <button title="${c.ultra_available ? 'Changer d\'objectif' : 'Ultra grand-angle non disponible sur ce téléphone'}" ${c.ultra_available || c.lens === 'ultra' ? '' : 'disabled'} ${c.recording ? 'disabled' : ''}
+        onclick="send({a:'lens', cam:'${c.id}', value:'${c.lens === 'ultra' ? 'wide' : 'ultra'}'})">${c.lens === 'ultra' ? 'Objectif ×0,5 → ×1' : 'Objectif ×1 → ×0,5'}</button>
       <button onclick="rename('${c.id}','${esc(c.name)}')">Renommer</button>
       <span style="flex:1"></span>
       <span class="s" style="color:var(--muted)">${tk.state ? esc(stateFr(tk.state)) : ''}</span>
@@ -222,7 +225,7 @@ let lastGridKey = '';
 function render() {
   const cams = S.cams;
   // grille : on ne reconstruit pas les images à chaque mise à jour
-  const key = JSON.stringify(cams.map(c => [c.id, c.name, c.fps, c.resolution, c.res720, c.stabilization, c.sync_ms, Math.round((c.battery||0)*100), c.recording, c.locked, c.check, c.take, c.exposure && Math.round(1/(c.exposure.duration||1)), c.preview_ts ? 1 : 0, c.storage_free && Math.round(c.storage_free/1e8)])) + S.qr.token;
+  const key = JSON.stringify(cams.map(c => [c.id, c.name, c.fps, c.resolution, c.res720, c.lens, c.ultra_available, c.stabilization, c.sync_ms, Math.round((c.battery||0)*100), c.recording, c.locked, c.check, c.take, c.exposure && Math.round(1/(c.exposure.duration||1)), c.preview_ts ? 1 : 0, c.storage_free && Math.round(c.storage_free/1e8)])) + S.qr.token;
   if (key !== lastGridKey) { lastGridKey = key; $('grid').innerHTML = cams.map(camCard).join('') + addCard(); }
 
   if (document.activeElement !== $('p60')) $('p60').checked = !!S.prefer60;

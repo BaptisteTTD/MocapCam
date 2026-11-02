@@ -76,10 +76,13 @@ def detect_candidates(image_bgr, markers, min_area=12):
     return out
 
 
-def default_K(width, height):
-    """Focale de départ d'un objectif principal de téléphone (~26 mm équivalent),
-    centre optique au milieu de l'image."""
-    f = 0.75 * max(width, height)
+LENS_F_SCALE = {"wide": 0.75, "ultra": 0.36}   # focale / largeur d'image (×1 ≈ 26 mm, ×0,5 ≈ 13 mm)
+
+
+def default_K(width, height, lens="wide"):
+    """Focale de départ selon l'objectif du téléphone (×1 ≈ 26 mm équivalent,
+    ×0,5 ≈ 13 mm), centre optique au milieu de l'image."""
+    f = LENS_F_SCALE.get(lens or "wide", 0.75) * max(width, height)
     return np.array([[f, 0, width / 2.0], [0, f, height / 2.0], [0, 0, 1.0]])
 
 
@@ -125,12 +128,12 @@ def _solve_with_focal(obj, img, K0, R, t, prior_sigma=0.35):
 
 
 def solve_camera_pose(image_bgr, markers, K=None, dist=None, min_markers=4, max_err_px=8.0,
-                      estimate_focal=False):
+                      estimate_focal=False, lens="wide"):
     """Retourne un dict : R, t (monde -> caméra), K, centre, erreurs, détections.
     Sans K (pas de calibration optique), la focale est estimée avec les boules."""
     H, W = image_bgr.shape[:2]
     if K is None:
-        K, dist, estimate_focal = default_K(W, H), np.zeros(5), True
+        K, dist, estimate_focal = default_K(W, H, lens), np.zeros(5), True
     dist = np.zeros(5) if dist is None else dist
     cands = detect_candidates(image_bgr, markers)
     world = np.array([m["position"] for m in markers], np.float64)

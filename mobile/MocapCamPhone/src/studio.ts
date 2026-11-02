@@ -1,7 +1,7 @@
 // Connexion au PC (MocapCam Studio) : WebSocket + reconnexion automatique.
 
 export type StudioCommand =
-  | { t: 'welcome'; id: string; name: string; prefer60?: boolean; preview?: number }
+  | { t: 'welcome'; id: string; name: string; prefer60?: boolean; preview?: number; lens?: 'wide' | 'ultra' }
   | { t: 'ping'; s0: number }
   | { t: 'arm'; take: string }
   | { t: 'start'; take: string; at: number }
@@ -12,7 +12,7 @@ export type StudioCommand =
   | { t: 'identify' }
   | { t: 'rename'; name: string }
   | { t: 'preview'; fps: number }
-  | { t: 'config'; prefer60?: boolean; preview?: number }
+  | { t: 'config'; prefer60?: boolean; preview?: number; lens?: 'wide' | 'ultra' }
   | { t: 'error'; message: string }
 
 export interface ConnectInfo {

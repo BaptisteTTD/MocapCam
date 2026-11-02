@@ -14,17 +14,19 @@ from scipy.spatial.transform import Rotation
 from .skeleton import BODY_IDX, SWAP_LR
 from . import triangulate as tri
 
-NCP = 8  # paramètres par caméra : rotation (3), translation (3), log focale, k1
+NCP = 9  # paramètres par caméra : rotation (3), translation (3), log focale, k1, k2
+# a priori sur la déformation selon l'objectif (l'ultra grand-angle déforme davantage)
+DIST_SIGMA = {"wide": (0.08, 0.03), "ultra": (0.30, 0.15)}
 
 
 def _project(cp, X, cx, cy, f0):
-    """cp (8,) paramètres caméra, X (N,3) -> pixels (N,2). Modèle OpenCV (k1 seul)."""
+    """cp (9,) paramètres caméra, X (N,3) -> pixels (N,2). Modèle OpenCV (k1, k2)."""
     R = Rotation.from_rotvec(cp[:3]).as_matrix()
     Xc = X @ R.T + cp[3:6]
     z = Xc[:, 2:3]
     x = Xc[:, :2] / np.where(np.abs(z) < 1e-9, 1e-9, z)
     r2 = np.sum(x * x, axis=1, keepdims=True)
-    xd = x * (1 + cp[7] * r2)
+    xd = x * (1 + cp[7] * r2 + cp[8] * r2 * r2)
     f = f0 * np.exp(cp[6])
     return np.column_stack([f * xd[:, 0] + cx, f * xd[:, 1] + cy])
 
@@ -80,7 +82,9 @@ def refine(cams, poses, delays, fps, volume, cfg=None, fixed_intrinsics=None, lo
     for v, c in enumerate(cams):
         cam0[v, :3] = Rotation.from_matrix(c["R"]).as_rotvec()
         cam0[v, 3:6] = np.asarray(c["t"], float)
-        cam0[v, 7] = float(np.asarray(c["dist"]).ravel()[0]) if np.size(c["dist"]) else 0.0
+        dv = np.asarray(c["dist"], float).ravel()
+        cam0[v, 7] = float(dv[0]) if dv.size > 0 else 0.0
+        cam0[v, 8] = float(dv[1]) if dv.size > 1 else 0.0
     # observations des boules (positions connues)
     mobs = []
     for v, c in enumerate(cams):
@@ -94,7 +98,8 @@ def refine(cams, poses, delays, fps, volume, cfg=None, fixed_intrinsics=None, lo
     uv = obs[:, 2:4]
     w = np.sqrt(obs[:, 4])
     w_mark = 4.0
-    sig_k1, sig_f = 0.08, 0.5
+    sig_f = 0.5
+    sig = [DIST_SIGMA.get(c.get("lens") or "wide", DIST_SIGMA["wide"]) for c in cams]
 
     def unpack(p):
         return p[: V * NCP].reshape(V, NCP), p[V * NCP:].reshape(npnt, 3)
@@ -116,14 +121,14 @@ def refine(cams, poses, delays, fps, volume, cfg=None, fixed_intrinsics=None, lo
         pri = []
         for v in range(V):
             if fixed_intrinsics[v]:
-                pri += [(cp[v, 6]) * 1e3, (cp[v, 7] - cam0[v, 7]) * 1e3]
+                pri += [(cp[v, 6]) * 1e3, (cp[v, 7] - cam0[v, 7]) * 1e3, (cp[v, 8] - cam0[v, 8]) * 1e3]
             else:
-                pri += [cp[v, 6] / sig_f, cp[v, 7] / sig_k1]
+                pri += [cp[v, 6] / sig_f, cp[v, 7] / sig[v][0], cp[v, 8] / sig[v][1]]
         out.append(np.array(pri))
         return np.concatenate(out)
 
     # structure creuse du jacobien
-    n_res = 2 * len(obs) + 2 * len(mobs) + 2 * V
+    n_res = 2 * len(obs) + 2 * len(mobs) + 3 * V
     A = lil_matrix((n_res, V * NCP + 3 * npnt), dtype=int)
     rows = np.arange(len(obs))
     for k in range(NCP):
@@ -139,8 +144,9 @@ def refine(cams, poses, delays, fps, volume, cfg=None, fixed_intrinsics=None, lo
         A[base + 2 * i + 1, v * NCP: (v + 1) * NCP] = 1
     base += 2 * len(mobs)
     for v in range(V):
-        A[base + 2 * v, v * NCP + 6] = 1
-        A[base + 2 * v + 1, v * NCP + 7] = 1
+        A[base + 3 * v, v * NCP + 6] = 1
+        A[base + 3 * v + 1, v * NCP + 7] = 1
+        A[base + 3 * v + 2, v * NCP + 8] = 1
 
     p0 = np.concatenate([cam0.ravel(), pts.ravel()])
     r0 = residuals(p0)
@@ -157,10 +163,10 @@ def refine(cams, poses, delays, fps, volume, cfg=None, fixed_intrinsics=None, lo
         K = np.array([[f, 0, cxy[v, 0]], [0, f, cxy[v, 1]], [0, 0, 1.0]])
         R = Rotation.from_rotvec(cp[v, :3]).as_matrix()
         t = cp[v, 3:6].copy()
-        d = dict(c, K=K, dist=np.array([cp[v, 7], 0, 0, 0, 0.0]), R=R, t=t,
+        d = dict(c, K=K, dist=np.array([cp[v, 7], cp[v, 8], 0, 0, 0.0]), R=R, t=t,
                  center=(-R.T @ t).tolist())
         out.append(d)
-        info.append(dict(name=c.get("name", str(v)), focal_px=float(f), k1=float(cp[v, 7]),
+        info.append(dict(name=c.get("name", str(v)), focal_px=float(f), k1=float(cp[v, 7]), k2=float(cp[v, 8]),
                          moved_cm=float(np.linalg.norm(np.array(d["center"]) - np.array(c["center"])) * 100)
                          if "center" in c else None))
     stats = dict(points=int(npnt), observations=int(len(obs)),

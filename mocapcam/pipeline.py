@@ -56,7 +56,7 @@ def _markers_for_solver(cfg):
     return [dict(m, position=m["position_3d"]) for m in cfg["markers"]]
 
 
-def calibrate_extrinsics(cfg, studio_dir, norm_videos, work, log=print):
+def calibrate_extrinsics(cfg, studio_dir, norm_videos, work, log=print, meta=None):
     cams = []
     mlist = _markers_for_solver(cfg)
     vol = mk.volume_box(mlist, cfg["volume"]["margin"], cfg["volume"]["height"])
@@ -70,7 +70,8 @@ def calibrate_extrinsics(cfg, studio_dir, norm_videos, work, log=print):
             pose = mk.solve_camera_pose(bg, mlist, intr["K"], intr["dist"])
             fixed = True
         else:                       # sans damier : focale estimée avec les boules
-            pose = mk.solve_camera_pose(bg, mlist)
+            lens = ((meta or {}).get("cameras", {}).get(name, {}) or {}).get("lens") or "wide"
+            pose = mk.solve_camera_pose(bg, mlist, lens=lens)
             fixed = False
         dbg = mk.draw_debug(bg, mlist, pose["K"], pose["dist"], pose, vol)
         cv2.imwrite(os.path.join(work, f"calibration_{name}.jpg"), dbg)
@@ -83,7 +84,8 @@ def calibrate_extrinsics(cfg, studio_dir, norm_videos, work, log=print):
         cams.append(dict(name=name, K=pose["K"], dist=np.asarray(pose["dist"], float), R=pose["R"],
                          t=np.asarray(pose["t"]), center=pose["center"], rms=pose["rms"],
                          width=info["width"], height=info["height"],
-                         marker_obs=pose["marker_obs"], intrinsics_fixed=fixed))
+                         marker_obs=pose["marker_obs"], intrinsics_fixed=fixed,
+                         lens=((meta or {}).get("cameras", {}).get(name, {}) or {}).get("lens") or "wide"))
     return cams, vol
 
 
@@ -210,7 +212,7 @@ def process_take(studio_dir, take_dir, force=False, manual_delays=None, only_cal
     delays_s = list(delays)
 
     log("3/6 Calibration automatique par les boules au sol…")
-    cams, vol = calibrate_extrinsics(cfg, studio_dir, norm, work, log)
+    cams, vol = calibrate_extrinsics(cfg, studio_dir, norm, work, log, meta=meta)
     if only_calib:
         log(f"Images de contrôle dans {work}")
         return None
@@ -234,7 +236,7 @@ def process_take(studio_dir, take_dir, force=False, manual_delays=None, only_cal
         log(f"  {ac['observations']} observations ; erreur {ac['reproj_before_px']:.1f} px "
             f"-> {ac['reproj_after_px']:.1f} px")
         for c in ac["cameras"]:
-            log(f"  {c['name']} : focale {c['focal_px']:.0f} px, déformation k1 {c['k1']:+.3f}")
+            log(f"  {c['name']} : focale {c['focal_px']:.0f} px, déformation k1 {c['k1']:+.3f} k2 {c['k2']:+.3f}")
     X, stats = triangulate.reconstruct(cams, poses, delays, fps, vol,
                                        cfg["reconstruction"], log)
     log(f"  images reconstruites : {stats['frames_ok']}/{stats['frames']}, "

@@ -45,7 +45,7 @@ import {
   type Settings,
 } from './src/settings'
 
-const APP_VERSION = '1.0.3'
+const APP_VERSION = '1.0.4'
 
 // Erreurs hors affichage (minuteries, callbacks natifs) : on les montre à l'écran
 // au lieu de laisser l'app se fermer.
@@ -315,15 +315,26 @@ function CaptureScreen({
   // caméra virtuelle (LiDAR + grand-angle, double…), qu'on évite.
   const defaultBack = useCameraDevice('back')
   const allDevices = useCameraDevices()
-  const device = useMemo(() => {
-    if (Platform.OS !== 'ios') return defaultBack
+  // objectif choisi depuis Studio : 'wide' (×1) ou 'ultra' (×0,5, champ plus large)
+  const [lens, setLens] = useState<'wide' | 'ultra'>('wide')
+  const lensSetup = useMemo(() => {
     const back = allDevices.filter((d) => d.position === 'back')
-    return (
-      back.find((d) => d.type === 'wide-angle' && !d.isVirtualDevice) ??
-      back.find((d) => d.type === 'wide-angle') ??
-      defaultBack
-    )
-  }, [allDevices, defaultBack])
+    const physical = (t: string) => back.find((d) => d.type === t && !d.isVirtualDevice)
+    let wide = defaultBack
+    if (Platform.OS === 'ios') {
+      // objectif seul : la caméra « par défaut » de l'iPhone peut être virtuelle (LiDAR, double…)
+      wide = physical('wide-angle') ?? back.find((d) => d.type === 'wide-angle') ?? defaultBack
+    }
+    const ultraDev = back.find((d) => d.type === 'ultra-wide-angle')
+    // Android : l'ultra grand-angle peut aussi être accessible en zoomant sous ×1
+    const ultraByZoom = !ultraDev && Platform.OS === 'android' && (defaultBack?.minZoom ?? 1) < 0.95
+    const available = !!ultraDev || ultraByZoom
+    if (lens === 'ultra' && ultraDev) return { device: ultraDev, zoom: 1, available, used: 'ultra' as const }
+    if (lens === 'ultra' && ultraByZoom && defaultBack)
+      return { device: defaultBack, zoom: defaultBack.minZoom, available, used: 'ultra' as const }
+    return { device: wide, zoom: 1, available, used: 'wide' as const }
+  }, [allDevices, defaultBack, lens])
+  const device = lensSetup.device
 
   // 1080p par défaut ; si le téléphone refuse 60 i/s en 1080p et que le PC demande
   // la priorité à la cadence, on essaie le 720p.
@@ -342,8 +353,8 @@ function CaptureScreen({
     quality: 0.8,
     qualityPrioritization: 'balanced',
   })
-  const liveRef = useRef({ device, videoOutput, res720 })
-  liveRef.current = { device, videoOutput, res720 }
+  const liveRef = useRef({ device, videoOutput, res720, lensSetup })
+  liveRef.current = { device, videoOutput, res720, lensSetup }
   const outputs = useMemo(
     () => (Platform.OS === 'ios' ? [videoOutput, photoOutput] : [videoOutput]),
     [videoOutput, photoOutput],
@@ -604,6 +615,7 @@ function CaptureScreen({
           if (cmd.name && cmd.name !== nameRef.current) onSettings({ ...settings, name: cmd.name })
           if (typeof cmd.prefer60 === 'boolean') applyPrefer60(cmd.prefer60)
           if (typeof cmd.preview === 'number') previewFps.current = cmd.preview
+          if (cmd.lens === 'wide' || cmd.lens === 'ultra') setLens(cmd.lens)
           break
         case 'arm':
           void arm()
@@ -627,6 +639,7 @@ function CaptureScreen({
           previewFps.current = cmd.fps
           break
         case 'config':
+          if ((cmd.lens === 'wide' || cmd.lens === 'ultra') && !recorderRef.current?.isRecording) setLens(cmd.lens)
           if (typeof cmd.prefer60 === 'boolean') applyPrefer60(cmd.prefer60)
           if (typeof cmd.preview === 'number') previewFps.current = cmd.preview
           break
@@ -722,6 +735,9 @@ function CaptureScreen({
         device_type: liveRef.current.device?.type ?? null,
         resolution: liveRef.current.videoOutput.currentResolution ?? null,
         res720: liveRef.current.res720,
+        lens: liveRef.current.lensSetup.used,
+        ultra_available: liveRef.current.lensSetup.available,
+        zoom: liveRef.current.lensSetup.zoom,
         supports60: (() => {
           try {
             return liveRef.current.device ? liveRef.current.device.supportsFPS(60) : null
@@ -793,6 +809,9 @@ function CaptureScreen({
           isActive
           outputs={outputs}
           constraints={constraints}
+          zoom={lensSetup.zoom}
+          resizeMode="contain"
+          enableDistortionCorrection={device.supportsDistortionCorrection ? true : undefined}
           orientationSource="interface"
           onSessionConfigSelected={onConfig}
           onError={(e) => flash(`Caméra : ${e.message}`)}

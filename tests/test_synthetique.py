@@ -299,6 +299,40 @@ def test_reconstruction(X_gt):
     return path
 
 
+# --------------------------------------------------------------------------- 5c. ultra grand-angle
+
+def test_ultrawide(X_gt):
+    """Poco à l'objectif ×0,5 : focale ~2 fois plus courte et forte déformation."""
+    from mocapcam import autocalib
+    saved = (K_TRUE[1].copy(), DIST_TRUE[1].copy())
+    K_TRUE[1] = np.array([[700.0, 0, 960], [0, 700.0, 540], [0, 0, 1]])
+    DIST_TRUE[1] = np.array([-0.12, 0.035, 0, 0, 0])
+    try:
+        mlist = [dict(m, position=[m["position"][0], m["position"][1], 0.016]) for m in pipeline.DEFAULT_STUDIO["markers"]]
+        vol = mk.volume_box(mlist)
+        poses = synth_2d(X_gt)
+        cams = []
+        for ci, (R, t) in enumerate(CAMS_TRUE):
+            lens = "ultra" if ci == 1 else "wide"
+            img = render_floor(R, t, mlist, K_TRUE[ci], DIST_TRUE[ci])
+            pz = mk.solve_camera_pose(img, mlist, lens=lens)
+            cams.append(dict(name=f"cam{ci}", K=pz["K"], dist=np.zeros(5), R=pz["R"], t=pz["t"], lens=lens,
+                             center=pz["center"], marker_obs=pz["marker_obs"], width=W, height=H))
+        f_init = cams[1]["K"][0, 0]
+        cams, ac = autocalib.refine(cams, poses, [0.0, 0.0], FPS, vol, pipeline.DEFAULT_STUDIO["reconstruction"], log=lambda *a: None)
+        X, _ = triangulate.reconstruct(cams, poses, [0.0, 0.0], FPS, vol, pipeline.DEFAULT_STUDIO["reconstruction"], log=lambda *a: None)
+        X = triangulate.postprocess(X, FPS, pipeline.DEFAULT_STUDIO["filtering"])
+        valid = np.isfinite(X_gt[..., 0])
+        e = np.linalg.norm(X[:, BODY_IDX] - X_gt[:, BODY_IDX], axis=-1)
+        m = valid[:, BODY_IDX] & np.isfinite(e)
+        c1 = cams[1]
+        ok("ultra grand-angle (×0,5) sur une caméra", np.median(e[m]) * 1000 < 8,
+           f"focale {f_init:.0f} -> {c1['K'][0, 0]:.0f} px (vraie 700), k1 {c1['dist'][0]:+.3f} (vrai -0.120), "
+           f"k2 {c1['dist'][1]:+.3f} (vrai +0.035) ; corps : erreur médiane {np.median(e[m]) * 1000:.1f} mm")
+    finally:
+        K_TRUE[1], DIST_TRUE[1] = saved
+
+
 # --------------------------------------------------------------------------- 5b. cadences différentes
 
 def test_mixed_fps():
@@ -414,6 +448,7 @@ if __name__ == "__main__":
     test_mixed_fps()
     X_gt = make_ground_truth()
     path = test_reconstruction(X_gt)
+    test_ultrawide(X_gt)
     test_blender(path, X_gt)
     n_ok = sum(1 for v in RESULTS.values() if v[0])
     print(f"\n{n_ok}/{len(RESULTS)} tests réussis")

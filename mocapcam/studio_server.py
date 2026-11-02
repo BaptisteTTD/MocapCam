@@ -93,6 +93,7 @@ class Cam:
             snapshot_size=st.get("snapshot_size"), device=st.get("device"),
             device_type=st.get("device_type"), resolution=st.get("resolution"),
             res720=st.get("res720"), supports60=st.get("supports60"),
+            lens=st.get("lens"), ultra_available=st.get("ultra_available"), zoom=st.get("zoom"),
             sync_ms=None if np.isnan(self.rtt) else round(self.rtt / 2, 1),
             preview_ts=self.preview_ts, check=self.check, take=self.take,
         )
@@ -116,7 +117,25 @@ class Studio:
         self._dirty = asyncio.Event()
         self.chirp_wav = None
         self.prefer60 = True        # priorité à 60 i/s (720p si le téléphone l'exige)
+        self.lens_by_name = self._load_lens()   # objectif choisi par caméra (×1 / ×0,5)
         self.preview_fps = 3.0
+
+    def _lens_path(self):
+        return os.path.join(self.studio_dir, "objectifs.json")
+
+    def _load_lens(self):
+        try:
+            with open(self._lens_path(), encoding="utf-8") as f:
+                return dict(json.load(f))
+        except (OSError, ValueError):
+            return {}
+
+    def _save_lens(self):
+        try:
+            with open(self._lens_path(), "w", encoding="utf-8") as f:
+                json.dump(self.lens_by_name, f, indent=2)
+        except OSError:
+            pass
 
     # ------------------------------------------------------------------ état -> interface
     def takes_list(self):
@@ -239,7 +258,8 @@ class Studio:
                                   platform=m.get("platform", ""), model=m.get("model", ""))
                         self.cams[cid] = cam
                         await self.send(cam, dict(t="welcome", id=cid, name=cam.name,
-                                                  prefer60=self.prefer60, preview=self.preview_fps))
+                                                  prefer60=self.prefer60, preview=self.preview_fps,
+                                                  lens=self.lens_by_name.get(cam.name, "wide")))
                         pinger = asyncio.create_task(self.ping_loop(cam))
                         await self.toast(f"Caméra connectée : {cam.name}")
                         self.changed()
@@ -303,12 +323,13 @@ class Studio:
             await self.broadcast(dict(type="preview", cam=cam.id, ts=cam.preview_ts))
         elif kind == 2:
             loop = asyncio.get_running_loop()
-            res, dbg = await loop.run_in_executor(None, self.check_markers, cam.name, jpg)
+            res, dbg = await loop.run_in_executor(None, self.check_markers, cam.name, jpg,
+                                                  cam.status.get("lens") or "wide")
             cam.check, cam.check_jpg = res, dbg
             self.changed()
 
     # ------------------------------------------------------------------ boules au sol
-    def check_markers(self, name, jpg):
+    def check_markers(self, name, jpg, lens="wide"):
         import cv2
         img = cv2.imdecode(np.frombuffer(jpg, np.uint8), cv2.IMREAD_COLOR)
         if img is None:
@@ -320,7 +341,7 @@ class Studio:
             cfg = pipeline.load_studio(self.studio_dir)
             mlist = [dict(m, position=m["position_3d"]) for m in cfg["markers"]]
             vol = mk.volume_box(mlist, cfg["volume"]["margin"], cfg["volume"]["height"])
-            pose = mk.solve_camera_pose(img, mlist)
+            pose = mk.solve_camera_pose(img, mlist, lens=lens)
             dbg = mk.draw_debug(img, mlist, pose["K"], pose["dist"], pose, vol)
             res = dict(ok=True, rms=round(pose["rms"], 2), seen=len(pose["used"]), total=len(mlist),
                        missing=pose["missing"], focal=round(float(pose["K"][0, 0]), 0),
@@ -443,7 +464,8 @@ class Studio:
             started_at_pc=c.take.get("started_at_pc"), called_at_pc=c.take.get("called_at_pc"),
             clock_offset_ms=c.offset, sync_rtt_ms=c.rtt, platform=c.platform, model=c.model,
             fps=c.status.get("fps"), stabilization=c.status.get("stabilization"),
-            resolution=c.status.get("resolution"), exposure=c.status.get("exposure"), locked=c.locked)
+            resolution=c.status.get("resolution"), exposure=c.status.get("exposure"), locked=c.locked,
+            lens=c.status.get("lens"), zoom=c.status.get("zoom"))
 
     def write_take_json(self):
         tk = self.take
@@ -579,6 +601,14 @@ class Studio:
             self.preview_fps = float(m.get("fps", 3))
             for c in cams:
                 await self.send(c, dict(t="preview", fps=self.preview_fps))
+            self.changed()
+        elif a == "lens" and m.get("cam") in self.cams:
+            c = self.cams[m["cam"]]
+            v = "ultra" if m.get("value") == "ultra" else "wide"
+            self.lens_by_name[c.name] = v
+            self._save_lens()
+            await self.send(c, dict(t="config", lens=v))
+            c.check = None   # la vérification des boules est à refaire
             self.changed()
         elif a == "prefer60":
             self.prefer60 = bool(m.get("value"))
