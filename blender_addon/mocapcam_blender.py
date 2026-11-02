@@ -80,18 +80,17 @@ def make_frames(d, r):
 
 
 def hold_fill(F, valid):
-    """Remplace les images invalides par la plus proche image valide."""
+    """Images invalides : on garde la dernière image valide (la première au tout début).
+    Pas de bascule au milieu d'un trou : la pose reste figée puis reprend quand les
+    données reviennent."""
     T = F.shape[0]
     if valid.all():
         return F
     idx = np.where(valid)[0]
     if idx.size == 0:
         return None
-    pos = np.searchsorted(idx, np.arange(T))
-    pos = np.clip(pos, 0, idx.size - 1)
-    prev = np.clip(pos - 1, 0, idx.size - 1)
-    t = np.arange(T)
-    pick = np.where(np.abs(idx[pos] - t) <= np.abs(idx[prev] - t), idx[pos], idx[prev])
+    pos = np.searchsorted(idx, np.arange(T), side="right") - 1
+    pick = idx[np.clip(pos, 0, idx.size - 1)]
     return F[pick]
 
 

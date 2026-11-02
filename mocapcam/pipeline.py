@@ -273,6 +273,8 @@ def export_motion(path, X, fps, cams, cfg, vol, stats):
     data = {
         "format": "mocapcam", "version": 1, "fps": fps, "units": "m", "up": "Z",
         "joint_names": JOINT_NAMES, "frame_count": int(X.shape[0]),
+        # temps (s) de la première image, par rapport au début de la vidéo de référence
+        "start_time_s": round(stats.get("first_frame", 0) / fps, 4),
         "positions": pos,
         "cameras": [dict(name=c["name"], K=np.asarray(c["K"]).tolist(),
                          dist=np.asarray(c["dist"]).ravel().tolist(), width=c["width"],
@@ -352,6 +354,12 @@ def process_take(studio_dir, take_dir, force=False, manual_delays=None, only_cal
 
     log("6/6 Nettoyage, lissage et export (.mocap.json + .fbx)…")
     X = triangulate.postprocess(X, fps, cfg["filtering"])
+    T0 = X.shape[0]
+    X, first = triangulate.trim_take(X, fps)
+    stats["first_frame"] = int(first)
+    if X.shape[0] < T0:
+        log(f"  début/fin sans acteur coupés : {first / fps:.1f} s au début, "
+            f"{(T0 - first - X.shape[0]) / fps:.1f} s à la fin")
     ok = np.isfinite(X[..., 0])
     stats["coverage_body"] = float(ok[:, :23].mean())
     stats["coverage_hands"] = float(ok[:, 91:].mean())

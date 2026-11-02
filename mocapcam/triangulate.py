@@ -288,6 +288,33 @@ def postprocess(X, fps, cfg=None):
     return X
 
 
+def trim_take(X, fps, min_segment_s=1.0, min_gap_s=0.5):
+    """Coupe le début et la fin de prise sans acteur exploitable : quelques images isolées
+    (moins de min_segment_s), séparées du reste par un trou, avant le jeu ou après (quand
+    l'acteur va arrêter les téléphones). Retourne (X coupé, première image gardée)."""
+    ok = np.isfinite(X[:, CORE_IDX, 0]).mean(1) >= 0.5
+    T = len(ok)
+    segs, s0 = [], None
+    for t in range(T + 1):
+        if t < T and ok[t]:
+            s0 = t if s0 is None else s0
+        elif s0 is not None:
+            segs.append((s0, t))
+            s0 = None
+    if not segs:
+        return X, 0
+    # on regroupe les morceaux séparés par de petits trous
+    merged = [list(segs[0])]
+    for a, b in segs[1:]:
+        if a - merged[-1][1] < min_gap_s * fps:
+            merged[-1][1] = b
+        else:
+            merged.append([a, b])
+    big = [m for m in merged if m[1] - m[0] >= min_segment_s * fps] or [max(merged, key=lambda m: m[1] - m[0])]
+    first, last = big[0][0], big[-1][1]
+    return X[first:last], first
+
+
 # ----------------------------------------------------------------------------- cadences différentes
 
 def _centroid(kp, sc, thr=0.3):
