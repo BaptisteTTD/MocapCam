@@ -55,29 +55,73 @@ def _thresholds(cfg):
     return thr
 
 
+# Segments dont la longueur ne change pas (ou peu) au cours d'une prise. Avec deux caméras à
+# la même hauteur, gauche et droite sont sur la même ligne épipolaire : associer la hanche
+# gauche d'une vue à la hanche droite de l'autre donne aussi un point 3D « cohérent », avec une
+# erreur de reprojection parfois plus faible, mais un corps déformé (bassin 50 % trop large,
+# tourné de 90°). La constance de ces longueurs départage les deux hypothèses.
+SEGMENTS = [("l_hip", "r_hip"), ("l_shoulder", "r_shoulder"),
+            ("l_shoulder", "r_hip"), ("r_shoulder", "l_hip"),
+            ("l_hip", "l_knee"), ("r_hip", "r_knee"), ("l_knee", "l_ankle"), ("r_knee", "r_ankle"),
+            ("l_shoulder", "l_elbow"), ("r_shoulder", "r_elbow"), ("l_elbow", "l_wrist"), ("r_elbow", "r_wrist")]
+SEG_GROUP = np.array([0, 1, 2, 2, 3, 3, 4, 4, 5, 5, 6, 6])   # gauche et droite : même longueur
+_SEG_CORE = [(CORE_IDX.index(INDEX[a]), CORE_IDX.index(INDEX[b])) for a, b in SEGMENTS]
+
+
+def _segment_lengths(Xcore):
+    return np.array([np.linalg.norm(Xcore[a] - Xcore[b]) for a, b in _SEG_CORE])
+
+
+def _structure_dev(lengths, ref):
+    """Écart relatif moyen aux longueurs de référence (0 = corps parfaitement constant)."""
+    r = ref[SEG_GROUP]
+    with np.errstate(invalid="ignore", divide="ignore"):
+        d = np.minimum(np.abs(lengths / r - 1.0), 1.0)
+    d = d[np.isfinite(d)]
+    return float(d.mean()) if d.size >= 3 else 0.5
+
+
 def reconstruct(cams, poses, delays, fps, volume, cfg=None, log=print, frames=None,
                 return_choices=False):
     """cams : liste de dict(K, dist, R, t). poses : liste de dict(kp (T,P,133,2), sc (T,P,133)).
     delays[v] : décalage (s) de la vue v par rapport à la vue 0 (référence).
-    Retourne X (T,133,3) en mètres dans le repère du sol, et des statistiques."""
+    Retourne X (T,133,3) en mètres dans le repère du sol, et des statistiques.
+
+    Pour chaque image, toutes les hypothèses (quelle personne dans chaque vue, gauche/droite
+    inversées ou non) sont triangulées. On retient celle qui combine faible erreur de
+    reprojection, corps de proportions constantes, et bassin proche de l'image précédente."""
     cfg = cfg or {}
     V = len(cams)
     Rt = np.stack([np.hstack([c["R"], np.asarray(c["t"], float).reshape(3, 1)]) for c in cams])
     fx = np.array([c["K"][0, 0] for c in cams])
     thr = _thresholds(cfg)
     max_err_px = cfg.get("max_reproj_px", 25.0)
+    w_struct = cfg.get("structure_weight", 40.0)
     lo, hi = volume
     T = poses[0]["kp"].shape[0]
     X_all = np.full((T, 133, 3), np.nan)
     chosen_err = np.full(T, np.nan)
-    prev_pelvis = None
-    swaps = 0
     lh, rh = INDEX["l_hip"], INDEX["r_hip"]
+    ilh, irh = CORE_IDX.index(lh), CORE_IDX.index(rh)
 
     # pré-calcul des coordonnées normalisées
     norm = [undistort_normalized(p["kp"], c["K"], c["dist"]) for p, c in zip(poses, cams)]
 
-    choices = {}
+    def build(per_view, combo, flips):
+        xs = np.full((V, 133, 2), np.nan)
+        ws = np.zeros((V, 133))
+        for v in range(V):
+            if combo[v] is None:
+                continue
+            x, s = per_view[v][combo[v]][:2]
+            if v > 0 and flips[v - 1]:
+                x, s = x[SWAP_LR], s[SWAP_LR]
+            xs[v], ws[v] = x, np.where(s >= thr, s, 0.0)
+        return xs, ws
+
+    # 1) toutes les hypothèses de chaque image
+    cands = {}
+    views_of = {}
     for i in (range(T) if frames is None else frames):
         per_view = []
         for v in range(V):
@@ -90,54 +134,82 @@ def reconstruct(cams, poses, delays, fps, volume, cfg=None, log=print, frames=No
             per_view.append([(norm[v][j, p], sc[p], j, p) for p in people])
         if sum(1 for pv in per_view if pv) < 2:
             continue
-        best = None
+        lst = []
         for combo in itertools.product(*[range(len(pv)) if pv else [None] for pv in per_view]):
             for flips in itertools.product([False, True], repeat=V - 1):
-                xs = np.full((V, 133, 2), np.nan)
-                ws = np.zeros((V, 133))
-                for v in range(V):
-                    if combo[v] is None:
-                        continue
-                    x, s = per_view[v][combo[v]][:2]
-                    if v > 0 and flips[v - 1]:
-                        x, s = x[SWAP_LR], s[SWAP_LR]
-                    xs[v], ws[v] = x, np.where(s >= thr, s, 0.0)
-                core = CORE_IDX
-                X, err = triangulate(xs[:, core], ws[:, core], Rt)
+                xs, ws = build(per_view, combo, flips)
+                X, err = triangulate(xs[:, CORE_IDX], ws[:, CORE_IDX], Rt)
                 e_px = err * fx[:, None]
-                valid = (ws[:, core] > 0) & np.isfinite(e_px)
+                valid = (ws[:, CORE_IDX] > 0) & np.isfinite(e_px)
                 if valid.sum() < 6:
                     continue
                 med = float(np.median(e_px[valid]))
-                pelvis = np.nanmean(X[[CORE_IDX.index(lh), CORE_IDX.index(rh)]], 0)
+                pelvis = np.nanmean(X[[ilh, irh]], 0)
                 pen = 0.0
                 if not np.all(np.isfinite(pelvis)):
                     pen += 50
                 elif np.any(pelvis < lo) or np.any(pelvis > hi):
                     pen += 100
-                elif prev_pelvis is not None:
-                    pen += 20 * max(0.0, np.linalg.norm(pelvis - prev_pelvis) - 0.3)
-                score = med + pen + 0.5 * sum(flips)  # à égalité, pas d'inversion
+                lst.append(dict(med=med, pen=pen + 0.5 * sum(flips), pelvis=pelvis,
+                                lengths=_segment_lengths(X), combo=combo, flips=flips))
+        if lst:
+            cands[i] = lst
+            views_of[i] = per_view
+
+    # 2) longueurs de référence du corps (médianes), puis choix image par image
+    def choose(ref):
+        out, prev_pelvis = {}, None
+        for i in sorted(cands):
+            best = None
+            for c in cands[i]:
+                score = c["med"] + c["pen"]
+                if prev_pelvis is not None and np.all(np.isfinite(c["pelvis"])):
+                    score += 20 * max(0.0, np.linalg.norm(c["pelvis"] - prev_pelvis) - 0.3)
+                if ref is not None:
+                    score += w_struct * _structure_dev(c["lengths"], ref)
                 if best is None or score < best[0]:
-                    best = (score, xs, ws, flips, pelvis, med,
-                            [None if c is None else per_view[v][c][2:] for v, c in enumerate(combo)])
-        if best is None or best[0] > max_err_px * 2:
-            continue
-        _, xs, ws, flips, pelvis, med, picked = best
-        choices[i] = (picked, flips)
-        swaps += int(any(flips))
+                    best = (score, c)
+            if best is None or best[1]["med"] > max_err_px * 2:
+                continue
+            out[i] = best[1]
+            if np.all(np.isfinite(best[1]["pelvis"])):
+                prev_pelvis = best[1]["pelvis"]
+        return out
+
+    def reference(sel):
+        L = np.array([c["lengths"] for c in sel.values()])
+        if len(L) < 10:
+            return None
+        ref = np.array([np.nanmedian(L[:, SEG_GROUP == g]) if np.isfinite(L[:, SEG_GROUP == g]).any()
+                        else np.nan for g in range(SEG_GROUP.max() + 1)])
+        return ref if np.isfinite(ref).sum() >= 3 else None
+
+    sel = choose(None)
+    ref = reference(sel) if w_struct > 0 else None
+    if ref is not None:
+        sel = choose(ref)
+        ref = reference(sel)      # une seconde passe, avec des références plus propres
+        sel = choose(ref) if ref is not None else sel
+
+    choices = {}
+    swaps = 0
+    for i, c in sel.items():
+        per_view = views_of[i]
+        xs, ws = build(per_view, c["combo"], c["flips"])
+        choices[i] = ([None if k is None else per_view[v][k][2:] for v, k in enumerate(c["combo"])],
+                      c["flips"])
+        swaps += int(any(c["flips"]))
         X, err = triangulate(xs, ws, Rt)
         e_px = np.nanmax(np.where(ws > 0, err * fx[:, None], 0), axis=0)
         X[e_px > max_err_px] = np.nan
         X_all[i] = X
-        chosen_err[i] = med
-        if np.all(np.isfinite(pelvis)):
-            prev_pelvis = pelvis
+        chosen_err[i] = c["med"]
         if frames is None and i % 300 == 0:
             log(f"    triangulation {i}/{T}")
     stats = dict(frames=T, frames_ok=int(np.isfinite(chosen_err).sum()),
                  median_reproj_px=float(np.nanmedian(chosen_err)) if np.isfinite(chosen_err).any() else None,
-                 lr_swaps_fixed=swaps)
+                 lr_swaps_fixed=swaps,
+                 body_lengths_m=None if ref is None else [round(float(v), 3) for v in ref])
     if return_choices:
         return X_all, stats, choices
     return X_all, stats
