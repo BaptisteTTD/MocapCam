@@ -487,10 +487,26 @@ def test_transfer(path):
     e = np.array(errs)
     H = np.array(hips) / 2
     ratio = np.linalg.norm(np.ptp(H[:, 1, :2], 0)) / max(np.linalg.norm(np.ptp(H[:, 0, :2], 0)), 1e-9)
+    # la rotation de chaque os (torsion comprise) suit celle de la source image par image :
+    # pas de saut de torsion ajouté par le retarget (doigts, avant-bras, jambes)
+    steps = {n: ([], []) for n in ("LeftForeArm", "RightHand", "LeftHandIndex2", "RightHandRing2",
+                                   "LeftHandThumb2", "LeftUpLeg", "RightFoot")}
+    prev = None
+    for f in range(sc.frame_start, sc.frame_end + 1):
+        sc.frame_set(f)
+        cur = {n: [(o.matrix_world @ o.pose.bones[mb.find_prefix(o) + n].matrix).to_quaternion()
+                   for o in (src, dst)] for n in steps}
+        if prev is not None:
+            for n in steps:
+                for i in range(2):
+                    d = math.degrees(prev[n][i].rotation_difference(cur[n][i]).angle) % 360
+                    steps[n][i].append(min(d, 360 - d))
+        prev = cur
+    tw = max(float(np.max(np.abs(np.array(a) - np.array(b)))) for a, b in steps.values())
     ok("retarget armature -> personnage Mixamo (A-pose, 0,01, 90°)",
-       np.median(e) < 0.5 and np.percentile(e, 95) < 2 and abs(ratio / 0.8 - 1) < 0.05,
+       np.median(e) < 0.5 and np.percentile(e, 95) < 2 and abs(ratio / 0.8 - 1) < 0.05 and tw < 1.0,
        f"{rep['animated']} os, directions : médiane {np.median(e):.2f}° (95 % < {np.percentile(e, 95):.2f}°), "
-       f"déplacement × {ratio:.2f} (tailles × 0,80)")
+       f"rotation image par image identique à la source à {tw:.2f}° près, déplacement × {ratio:.2f} (tailles × 0,80)")
 
 
 # --------------------------------------------------------------------------- 5b. boules imprécises

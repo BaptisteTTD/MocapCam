@@ -1,7 +1,7 @@
 bl_info = {
     "name": "MocapCam",
     "author": "MocapCam",
-    "version": (0, 3, 0),
+    "version": (0, 3, 1),
     "blender": (3, 6, 0),
     "location": "Vue 3D > barre latérale (N) > MocapCam  |  Fichier > Importer > Animation MocapCam (.fbx)",
     "description": "Importe une animation MocapCam (FBX, squelette Mixamo) et la transfère (retarget) "
@@ -302,9 +302,12 @@ def _scale_from(J):
     return float(np.median(v)) if v.size else None
 
 
-def apply_motion(obj, J_mocap, fps, start_frame=1, root_mode="RELATIVE", action_name=None, clean=True):
+def apply_motion(obj, J_mocap, fps, start_frame=1, root_mode="RELATIVE", action_name=None, clean=True,
+                 twist=None):
     """Calcule et écrit l'animation sur l'armature obj (noms Mixamo, préfixe quelconque).
-    clean=False : pas de lissage (source déjà propre, ex. une autre armature)."""
+    clean=False : pas de lissage (source déjà propre, ex. une autre armature).
+    twist : {os: (T,3)} références de torsion imposées (retarget : la torsion de chaque os
+    de la source est reprise telle quelle au lieu d'être recalculée depuis les points)."""
     prefix = find_prefix(obj)
     Jm = derive(dict(J_mocap))
     Jr = derive(virtual_joints(obj, prefix, posed=False))
@@ -327,7 +330,8 @@ def apply_motion(obj, J_mocap, fps, start_frame=1, root_mode="RELATIVE", action_
         if short in specs:
             dfn, rfn = specs[short]
             with np.errstate(invalid="ignore"):
-                dm, rm = dfn(Jm), rfn(Jm)
+                dm = dfn(Jm)
+                rm = twist[short] if (twist is not None and short in twist) else rfn(Jm)
                 # référence de torsion absente (ex. main cachée) : on garde la dernière
                 # torsion connue, mais la direction de l'os continue de suivre la capture
                 rv = np.isfinite(rm).all(-1) & (np.linalg.norm(np.nan_to_num(rm), axis=-1) > 1e-9)
@@ -699,20 +703,41 @@ def create_mixamo_armature(context, J, name="MocapCam_Squelette", obj_matrix=Non
 
 # --------------------------------------------------------------------------- armature -> armature
 
-def armature_motion(context, src, frame_start, frame_end):
+def armature_motion(context, src, frame_start, frame_end, with_twist=False):
     """Points équivalents à une capture (épaules, coudes, doigts…), image par image, depuis une
-    armature animée aux noms Mixamo (ex. un FBX MocapCam importé)."""
+    armature animée aux noms Mixamo (ex. un FBX MocapCam importé).
+    with_twist=True : renvoie aussi, pour chaque os, sa référence de torsion de repos tournée
+    avec l'os ; elle reste solidaire de l'os, donc jamais parallèle à lui (pas de bascule)."""
     prefix = find_prefix(src)
     sc = context.scene
     back = sc.frame_current
     frames = []
+    refs = {}
+    if with_twist:
+        rest = _bone_frames(src, prefix, False)
+        Jr = derive(virtual_joints(src, prefix, posed=False))
+        ref0 = {}
+        with np.errstate(invalid="ignore"):
+            for short, (_, rfn) in bone_specs().items():
+                if short in rest:
+                    r = np.asarray(rfn(Jr), float)
+                    if np.isfinite(r).all() and np.linalg.norm(r) > 1e-9:
+                        ref0[short] = rest[short][1].T @ r     # dans le repère de l'os au repos
+        refs = {k: [] for k in ref0}
+    mw = src.matrix_world
     try:
         for f in range(frame_start, frame_end + 1):
             sc.frame_set(f)
             frames.append(virtual_joints(src, prefix, posed=True))
+            for short in refs:
+                R = np_mat((mw @ src.pose.bones[prefix + short].matrix).to_3x3().normalized())
+                refs[short].append(R @ ref0[short])
     finally:
         sc.frame_set(back)
-    return {k: np.array([fr[k] for fr in frames]) for k in frames[0]}
+    J = {k: np.array([fr[k] for fr in frames]) for k in frames[0]}
+    if with_twist:
+        return J, {k: np.array(v) for k, v in refs.items()}
+    return J
 
 
 def transfer_motion(context, src, dst, root_mode="RELATIVE", start_frame=None, action_name=None):
@@ -722,11 +747,11 @@ def transfer_motion(context, src, dst, root_mode="RELATIVE", start_frame=None, a
         raise RuntimeError(f"L'armature « {src.name} » n'a pas d'animation.")
     act = src.animation_data.action
     f0, f1 = (int(round(v)) for v in act.frame_range)
-    J = armature_motion(context, src, f0, f1)
+    J, twist = armature_motion(context, src, f0, f1, with_twist=True)
     fps = context.scene.render.fps / context.scene.render.fps_base
     name = action_name or act.name.split("|")[-1]
     rep = apply_motion(dst, J, fps, f0 if start_frame is None else start_frame, root_mode,
-                       action_name=name, clean=False)
+                       action_name=name, clean=False, twist=twist)
     rep.update(frames=f1 - f0 + 1)
     return rep
 

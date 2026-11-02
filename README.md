@@ -211,7 +211,8 @@ si Blender n'est pas trouvé ; le chemin peut aussi être mis dans `studio.json`
    La cadence et la plage d'images de la scène sont réglées toutes seules.
 2. **Personnage** : choisissez la **Cible**, l'armature de votre personnage (par exemple
    « Armature » pour un personnage téléchargé sur Mixamo), puis cliquez **Retarget**.
-   * Chaque os du personnage prend la même direction que dans l'animation ; le préfixe
+   * Chaque os du personnage prend la même direction et la même torsion que dans
+     l'animation (rotations identiques image par image, aucun tressautement ajouté) ; le préfixe
      (`mixamorig:`, `mixamorig1:`…), l'échelle 0,01, la rotation de l'objet et la pose de
      repos (T-pose ou A-pose) sont gérés.
    * Le déplacement est mis à l'échelle du personnage. En mode *Relatif* (par défaut), il part
