@@ -1,0 +1,19 @@
+diff --git a/node_modules/react-native-vision-camera/android/src/main/java/com/margelo/nitro/camera/hybrids/outputs/HybridVideoOutput.kt b/node_modules/react-native-vision-camera/android/src/main/java/com/margelo/nitro/camera/hybrids/outputs/HybridVideoOutput.kt
+index c65d44f..cea14ff 100644
+--- a/node_modules/react-native-vision-camera/android/src/main/java/com/margelo/nitro/camera/hybrids/outputs/HybridVideoOutput.kt
++++ b/node_modules/react-native-vision-camera/android/src/main/java/com/margelo/nitro/camera/hybrids/outputs/HybridVideoOutput.kt
+@@ -88,6 +88,14 @@ class HybridVideoOutput(
+           // chosen Quality's typical size, e.g. SD@640x480 + RATIO_16_9 → 640x360.
+           val qualitySelector = options.targetResolution.toQualitySelector()
+           setQualitySelector(qualitySelector)
++
++          // MocapCam : une cible 4:3 donne une vidéo 4:3 (tout le capteur, même cadrage que
++          // l'aperçu) au lieu du 16:9 par défaut, qui coupe le haut et le bas de l'image.
++          val tw = options.targetResolution.width
++          val th = options.targetResolution.height
++          if (tw > 0 && th > 0 && kotlin.math.abs(maxOf(tw, th) / minOf(tw, th) - 4.0 / 3.0) < 0.05) {
++            setAspectRatio(androidx.camera.core.AspectRatio.RATIO_4_3)
++          }
+         }.build()
+   }
+ 

@@ -360,6 +360,41 @@ def test_reconstruction(X_gt):
     return path
 
 
+# --------------------------------------------------------------------------- 7. export FBX
+
+def test_fbx(path):
+    """Capture -> FBX (squelette Mixamo animé) -> réimport : mêmes positions, mêmes noms d'os."""
+    import bpy
+    import mocapcam_blender as mb
+    dst = os.path.join(OUT, "test_mixamo.fbx")
+    rep = mb.capture_to_fbx(path, dst)
+    arm = bpy.data.objects["Armature"]
+    sc = bpy.context.scene
+    frames = [sc.frame_start, (sc.frame_start + sc.frame_end) // 2, sc.frame_end]
+
+    def heads(obj, frs):
+        out = []
+        for f in frs:
+            bpy.context.scene.frame_set(f)
+            bpy.context.view_layer.update()
+            out.append({b.name: np.array(obj.matrix_world @ b.head) for b in obj.pose.bones})
+        return out
+    ref = heads(arm, frames)
+    bpy.ops.wm.read_factory_settings(use_empty=True)
+    bpy.ops.import_scene.fbx(filepath=dst)
+    a2 = [o for o in bpy.data.objects if o.type == "ARMATURE"][0]
+    act = a2.animation_data.action
+    off = int(round(act.frame_range[0])) - frames[0]   # Blender place le temps 0 à l'image 1
+    got = heads(a2, [f + off for f in frames])
+    err = max(np.linalg.norm(g[n] - r[n]) for g, r in zip(got, ref) for n in r)
+    names = {b.name for b in a2.data.bones}
+    n_frames = int(round(act.frame_range[1] - act.frame_range[0])) + 1
+    ok("export FBX squelette Mixamo", err < 1e-3 and len(names) == 65
+       and all(n.startswith("mixamorig:") for n in names) and n_frames == rep["frames"],
+       f"{len(names)} os 'mixamorig:', {n_frames} images à {rep['fps']:g} i/s, animation « {act.name} », "
+       f"écart après réimport {err * 1000:.2f} mm, {os.path.getsize(dst) / 1e6:.1f} Mo")
+
+
 # --------------------------------------------------------------------------- 5b. boules imprécises
 
 def test_imprecise_balls(X_gt):
@@ -566,6 +601,7 @@ if __name__ == "__main__":
     test_ultrawide(X_gt)
     test_imprecise_balls(X_gt)
     test_blender(path, X_gt)
+    test_fbx(path)
     n_ok = sum(1 for v in RESULTS.values() if v[0])
     print(f"\n{n_ok}/{len(RESULTS)} tests réussis")
     with open(os.path.join(OUT, "resultats.json"), "w", encoding="utf-8") as f:

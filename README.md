@@ -1,20 +1,20 @@
 # MocapCam : motion capture avec deux téléphones, vers Blender
 
 MocapCam transforme deux vidéos filmées au téléphone en une animation 3D, avec le corps
-et les doigts, prête à être appliquée à un personnage Mixamo dans Blender.
+et les doigts : un **FBX au squelette Mixamo**, prêt pour Blender, Unity, Unreal…
 
 Trois éléments :
 * **l'app MocapCam** sur chaque téléphone : elle filme avec des réglages fixes (1080p 60 i/s,
   objectif ×1, stabilisation coupée, exposition bloquée) ;
 * **MocapCam Studio** sur le PC : vous y voyez les caméras, vérifiez les boules, lancez et
   arrêtez l'enregistrement de tous les téléphones d'un clic, et les vidéos arrivent toutes seules ;
-* **l'add-on Blender**, pour importer l'animation.
+* **l'add-on Blender**, pour importer l'animation ou l'appliquer à votre personnage.
 
 ```
 iPhone + Poco ─► calage par le bip du PC ─► position + objectif des caméras grâce aux boules au sol
               ─► détection 2D corps + mains (IA RTMW) ─► affinage des caméras avec le corps
               ─► triangulation 3D ─► lissage
-              ─► prise.mocap.json ─► add-on Blender : squelette Mixamo / votre personnage
+              ─► prise.mocap.json + prise.fbx (squelette Mixamo animé)
 ```
 
 ---
@@ -100,6 +100,11 @@ Elles forment un **carré** dont la taille dépend de votre pièce (1,5 à 3 m d
 la stabilisation coupée et une image sans HDR. Studio affiche ce que chaque téléphone a
 réellement accepté.
 
+**Cadrage** : ce que montre Studio est exactement ce qui est filmé. Sur Android, l'app filme
+en **4:3 (1440×1080)**, c'est-à-dire tout le capteur, comme l'aperçu : en 16:9, le téléphone
+coupait le haut et le bas de l'image. L'iPhone filme en 16:9, identique à son aperçu. Si un
+téléphone ne peut pas faire autrement, son écran assombrit les bords qui ne seront pas filmés.
+
 Les réglages ci-dessous ne concernent que les vidéos filmées avec l'appareil photo normal (section 7) :
 
 * **1080p, 60 i/s, en paysage**, avec l'objectif principal (×1, sans zoom)
@@ -152,7 +157,9 @@ de l'estimation automatique.
    est statique), puis **■ Arrêter**. Les vidéos sont envoyées automatiquement au PC, dans
    `captures\prise_XXX\`.
 6. Dans la liste **Prises**, cliquez **Traiter**. Le déroulement s'affiche dans le panneau
-   *Traitement*, et le résultat est `captures\prise_XXX\prise_XXX.mocap.json`.
+   *Traitement*. Résultats, dans `captures\prise_XXX\` :
+   * **`prise_XXX.fbx`** : l'animation sur un squelette Mixamo (voir section 8) ;
+   * `prise_XXX.mocap.json` : les points 3D bruts, pour l'add-on Blender.
 
 ## 7. Sans l'app : vidéos filmées à la main
 
@@ -171,12 +178,31 @@ dans `studio.json`. Pour aller plus vite au détriment de la précision : `"mode
 **Si le son ne synchronise pas** (confiance faible), indiquez le décalage à la main :
 `mocapcam traiter studio prise1 --decalage poco=0.125` (en secondes).
 
-## 8. Dans Blender
+## 8. Le FBX et Blender
 
-**Importer** : *Fichier > Importer > MocapCam (.mocap.json)*. L'import crée :
-* un squelette **aux 65 os Mixamo** (`mixamorig:Hips`, `mixamorig:LeftHandIndex1`, …),
-  aux proportions de l'acteur, animé corps et doigts ;
-* les caméras à leur vraie position, les boules et le volume de capture, pour contrôler le résultat.
+**Le FBX** (`prise_XXX.fbx`) est créé automatiquement à la fin du traitement, avec Blender
+(lancé en arrière-plan, sans fenêtre ; Blender doit être installé, il est trouvé tout seul).
+C'est l'équivalent d'une animation Mixamo téléchargée « sans skin » :
+* squelette aux **65 os Mixamo** (`mixamorig:Hips`, `mixamorig:LeftHandIndex1`, …), en T-pose,
+  aux proportions de l'acteur, animé corps et doigts, une clé par image (60 i/s) ;
+* Y vers le haut, personnage tourné vers +Z, à taille réelle, sans os de bout ajoutés ;
+* le personnage part de l'origine (déplacement relatif). Pour garder la position dans la zone
+  de capture : `mocapcam fbx captures\prise_XXX --absolu`.
+
+Utilisation :
+* **Unity** : importez le FBX, *Rig > Animation Type : Humanoid* (les noms Mixamo sont reconnus
+  tout seuls), puis utilisez l'animation sur n'importe quel personnage humanoïde.
+* **Unreal** : importez-le sur le squelette du FBX, puis reciblez avec l'IK Retargeter
+  (préréglage Mixamo).
+* **Blender et autres** : tout outil qui accepte les animations Mixamo (Rokoko, Auto-Rig Pro,
+  Expy Kit, Cascadeur…).
+
+Pour refaire un FBX : `mocapcam fbx captures\prise_XXX` (ou `--blender "C:\...\blender.exe"`
+si Blender n'est pas trouvé ; le chemin peut aussi être mis dans `studio.json`, clé `blender`).
+
+**Dans Blender, avec l'add-on** : *Fichier > Importer > MocapCam (.mocap.json)* crée le même
+squelette, plus les caméras à leur vraie position, les boules et le volume de capture, pour
+contrôler le résultat.
 
 **Appliquer à votre personnage Mixamo** : sélectionnez son armature, puis ouvrez la barre latérale
 (touche N) > onglet **MocapCam** > **Appliquer à l'armature active**.
@@ -185,10 +211,8 @@ dans `studio.json`. Pour aller plus vite au détriment de la précision : `"mode
   la pose de repos (T-pose ou A-pose) sont gérées.
 * Le déplacement est mis à l'échelle du personnage. En mode *Relatif*, le personnage part de sa
   position actuelle. En mode *Absolu*, il suit les coordonnées de la zone de capture.
-
-**Vers d'autres squelettes** : les noms Mixamo sont reconnus par les outils de retargeting
-(Rokoko, Auto-Rig Pro, Expy Kit…) avec leur préréglage « Mixamo ». Vous pouvez aussi exporter
-en FBX ou BVH depuis Blender.
+* Pour réexporter votre personnage animé : **Exporter en FBX (Mixamo)** dans le même onglet,
+  ou *Fichier > Exporter > FBX MocapCam (Mixamo)*.
 
 ## 9. Réglages avancés (`studio.json`)
 
@@ -197,6 +221,8 @@ en FBX ou BVH depuis Blender.
 | `cameras` | noms des caméras, donc des fichiers vidéo. Ajoutez un 3ᵉ téléphone ici. |
 | `marker_height` | hauteur du centre visible des boules : 0,4 × le rayon pour une demi-boule (0,016 m pour une boule de 8 cm coupée en deux) |
 | `markers[].position` | positions en mètres. Pour un carré, réglez plutôt le côté dans Studio. |
+| `blender` | chemin de `blender.exe` pour le FBX, si Blender n'est pas trouvé tout seul |
+| `fbx` | `false` pour ne pas créer de FBX |
 | `markers` | ajouter des boules (6 à 8) améliore la première estimation. Une boule posée sur un objet de hauteur connue (Z ≠ 0) l'améliore beaucoup. |
 | `markers[].hsv` | couleur sur mesure `[teinte 0-180, tolérance, saturation min, luminosité min]` |
 | `reconstruction.score_hands` | seuil de confiance des mains (augmentez-le si les doigts tremblent) |
@@ -216,6 +242,8 @@ en FBX ou BVH depuis Blender.
 | Signal sonore « peu audible » | Montez le volume du PC. Sinon, la synchro se fait par les horloges, à environ une image près. |
 | « Stabilisation » différente de *off* | Le téléphone ne permet pas de la couper à 60 i/s : réessayez à 30 i/s, ou acceptez une précision un peu moindre. |
 | L'app iPhone ne s'ouvre plus | Les 7 jours sont passés : réinstallez-la avec Sideloadly. |
+| « FBX non créé : Blender introuvable » | Installez Blender (blender.org), ou indiquez son chemin dans `studio.json`, clé `blender`. |
+| Vidéo plus serrée que l'aperçu | Mettez à jour l'app (1.0.5 ou plus). |
 | « Pas assez de points communs » | L'acteur est trop peu visible par les deux caméras à la fois. Rapprochez les caméras de l'axe de jeu. |
 | Doigts qui tremblent | Rapprochez les caméras, éclairez mieux, baissez `cutoff_hands_hz` à 5–6. |
 | Bras ou jambe qui « saute » | Membre caché pour une caméra : ajoutez un 3ᵉ téléphone, ou orientez l'action face aux caméras. |

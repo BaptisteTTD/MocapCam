@@ -267,7 +267,7 @@ function render() {
   $('takes').innerHTML = S.takes.length ? S.takes.map(t => `<div class="take">
       <span class="n">${esc(t.name)}</span>
       <span class="s">${t.videos.length} vidéo${t.videos.length > 1 ? 's' : ''}${t.duration ? ' · ' + t.duration + ' s' : ''}</span>
-      ${t.processed ? '<span class="s done">✓ traitée</span>' : ''}
+      ${t.processed ? `<span class="s done">✓ traitée${t.fbx ? ' · FBX' : ''}</span>` : ''}
       <button ${S.processing && S.processing.running || t.videos.length < 2 ? 'disabled' : ''} onclick="send({a:'process', take:'${esc(t.name)}'})">${t.processed ? 'Retraiter' : 'Traiter'}</button>
       <button onclick="send({a:'open', take:'${esc(t.name)}'})">📁</button>
     </div>`).join('') : '<p class="hint">Aucune prise pour l\'instant.</p>';

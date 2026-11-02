@@ -45,7 +45,7 @@ import {
   type Settings,
 } from './src/settings'
 
-const APP_VERSION = '1.0.4'
+const APP_VERSION = '1.0.5'
 
 // Erreurs hors affichage (minuteries, callbacks natifs) : on les montre à l'écran
 // au lieu de laisser l'app se fermer.
@@ -342,7 +342,11 @@ function CaptureScreen({
   const prefer60 = useRef(true)
   const tried720 = useRef(false)
   const videoOutput = useVideoOutput({
-    targetResolution: res720 ? CommonResolutions.HD_16_9 : CommonResolutions.FHD_16_9,
+    // Android : vidéo 4:3 = tout le capteur, exactement l'image de l'aperçu (en 16:9 le
+    // téléphone coupait le haut et le bas). iPhone : 16:9, identique à son aperçu.
+    targetResolution: FULL_SENSOR
+      ? res720 ? CommonResolutions.HD_4_3 : CommonResolutions.FHD_4_3
+      : res720 ? CommonResolutions.HD_16_9 : CommonResolutions.FHD_16_9,
     enableAudio: true,
     fileType: 'mp4',
   })
@@ -386,6 +390,10 @@ function CaptureScreen({
   const previewFps = useRef(3)
   const busySnap = useRef(false)
   const lastSnapSize = useRef<{ w: number; h: number } | null>(null)
+  // format de l'aperçu (largeur / hauteur), connu dès la première image envoyée au PC
+  const previewAspectRef = useRef(0)
+  const [previewAspect, setPreviewAspect] = useState(0)
+  const [layout, setLayout] = useState({ width: 0, height: 0 })
   const clientRef = useRef<StudioClient | null>(null)
   const camStatusRef = useRef<CamStatus>({})
   camStatusRef.current = camStatus
@@ -584,11 +592,18 @@ function CaptureScreen({
       } else {
         img = await ref.takeSnapshot()
       }
-      lastSnapSize.current = { w: img.width, h: img.height }
       // le redimensionnement applique aussi l'orientation (images toujours « à l'endroit »)
       const maxSide = kind === 1 ? 640 : 1920
       const scale = Math.min(1, maxSide / Math.max(img.width, img.height))
       img = await img.resizeAsync(Math.round(img.width * scale), Math.round(img.height * scale))
+      lastSnapSize.current = { w: img.width, h: img.height }
+      const pa = Math.max(img.width, img.height) / Math.min(img.width, img.height)
+      if (Math.abs(pa - previewAspectRef.current) > 0.01) {
+        previewAspectRef.current = pa
+        setPreviewAspect(pa)
+      }
+      // même cadrage que la vidéo enregistrée (l'aperçu peut être plus haut ou plus large)
+      img = await cropToAspect(img, videoAspect(videoOutput.currentResolution))
       const enc = await img.toEncodedImageDataAsync('jpg', kind === 1 ? 55 : 92)
       client.sendBinary(kind, enc.buffer)
     } catch {
@@ -596,7 +611,7 @@ function CaptureScreen({
     } finally {
       busySnap.current = false
     }
-  }, [photoOutput])
+  }, [photoOutput, videoOutput])
 
   // ---------------------------------------------------------------- commandes du PC
   const onCommand = useCallback(
@@ -793,7 +808,13 @@ function CaptureScreen({
 
   const onLayout = (e: LayoutChangeEvent) => {
     viewSize.current = { width: e.nativeEvent.layout.width, height: e.nativeEvent.layout.height }
+    setLayout(viewSize.current)
   }
+  // Android : si l'aperçu n'a pas le format de la vidéo, on assombrit ce qui ne sera pas filmé
+  const guide =
+    Platform.OS === 'android'
+      ? recordedArea(layout, previewAspect, videoAspect(videoOutput.currentResolution))
+      : null
 
   const recSecs = recording ? Math.max(0, (now - recording.since) / 1000) : 0
   const connColor = conn.state === 'connected' ? '#3ddc84' : conn.state === 'error' ? '#ff5252' : '#ffb300'
@@ -821,6 +842,11 @@ function CaptureScreen({
           <ActivityIndicator color="#fff" />
         </View>
       )}
+
+      {guide
+        ? guide.masks.map((m, i) => <View key={i} pointerEvents="none" style={[styles.mask, m]} />)
+        : null}
+      {guide ? <View pointerEvents="none" style={[styles.frameGuide, guide.frame]} /> : null}
 
       <View style={styles.topBar}>
         <View style={[styles.dot, { backgroundColor: connColor }]} />
@@ -867,6 +893,78 @@ function CaptureScreen({
       ) : null}
     </View>
   )
+}
+
+// ============================================================================ cadrage
+
+/** Android : vidéo en 4:3 (tout le capteur, comme l'aperçu). */
+const FULL_SENSOR = Platform.OS === 'android'
+
+/** Format (grand côté / petit côté) de la vidéo ; 16:9 ou 4:3 par défaut. */
+function videoAspect(res?: { width: number; height: number } | null): number {
+  if (res && res.width > 0 && res.height > 0) return Math.max(res.width, res.height) / Math.min(res.width, res.height)
+  return FULL_SENSOR ? 4 / 3 : 16 / 9
+}
+
+/** Recadre une image (déjà à l'endroit) au format de la vidéo, au centre. */
+async function cropToAspect(img: Image, aspect: number): Promise<Image> {
+  const landscape = img.width >= img.height
+  const long = landscape ? img.width : img.height
+  const short = landscape ? img.height : img.width
+  const ia = long / short
+  if (Math.abs(ia - aspect) / aspect < 0.02) return img
+  let w = img.width
+  let h = img.height
+  if (ia < aspect) {
+    // image plus « carrée » que la vidéo : on retire des bandes sur le petit côté
+    if (landscape) h = Math.round(img.width / aspect)
+    else w = Math.round(img.height / aspect)
+  } else if (landscape) w = Math.round(img.height * aspect)
+  else h = Math.round(img.width * aspect)
+  const x = Math.round((img.width - w) / 2)
+  const y = Math.round((img.height - h) / 2)
+  return img.cropAsync(x, y, x + w, y + h)
+}
+
+type Rect = { left: number; top: number; width: number; height: number }
+
+/** Zone réellement filmée dans l'aperçu affiché en « contain », et bandes à assombrir. */
+function recordedArea(
+  view: { width: number; height: number },
+  previewAspect: number,
+  vAspect: number,
+): { frame: Rect; masks: Rect[] } | null {
+  if (!view.width || !view.height || !previewAspect || Math.abs(previewAspect - vAspect) / vAspect < 0.02) return null
+  const landscape = view.width >= view.height
+  // aperçu affiché en entier, centré
+  const pa = landscape ? previewAspect : 1 / previewAspect
+  let pw = view.width
+  let ph = pw / pa
+  if (ph > view.height) {
+    ph = view.height
+    pw = ph * pa
+  }
+  const px = (view.width - pw) / 2
+  const py = (view.height - ph) / 2
+  const va = landscape ? vAspect : 1 / vAspect
+  let fw = pw
+  let fh = fw / va
+  if (fh > ph) {
+    fh = ph
+    fw = fh * va
+  }
+  const frame = { left: px + (pw - fw) / 2, top: py + (ph - fh) / 2, width: fw, height: fh }
+  const masks: Rect[] =
+    fw < pw - 1
+      ? [
+          { left: px, top: py, width: frame.left - px, height: ph },
+          { left: frame.left + fw, top: py, width: px + pw - frame.left - fw, height: ph },
+        ]
+      : [
+          { left: px, top: py, width: pw, height: frame.top - py },
+          { left: px, top: frame.top + fh, width: pw, height: py + ph - frame.top - fh },
+        ]
+  return { frame, masks }
 }
 
 // ============================================================================ UI
@@ -921,4 +1019,6 @@ const styles = StyleSheet.create({
   banner: { position: 'absolute', top: 60, alignSelf: 'center', backgroundColor: '#000c', borderRadius: 8, padding: 10 },
   identify: { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: '#2f6fedcc', alignItems: 'center', justifyContent: 'center' },
   identifyText: { color: '#fff', fontSize: 96, fontWeight: '800' },
+  mask: { position: 'absolute', backgroundColor: '#000a' },
+  frameGuide: { position: 'absolute', borderWidth: 2, borderColor: '#ffd54f' },
 })

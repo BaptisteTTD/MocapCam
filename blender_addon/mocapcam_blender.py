@@ -1,9 +1,10 @@
 bl_info = {
     "name": "MocapCam",
     "author": "MocapCam",
-    "version": (0, 1, 0),
+    "version": (0, 2, 0),
     "blender": (3, 6, 0),
-    "location": "Fichier > Importer > MocapCam (.mocap.json)  |  Vue 3D > barre latérale (N) > MocapCam",
+    "location": "Fichier > Importer > MocapCam (.mocap.json)  |  Fichier > Exporter > FBX MocapCam (Mixamo)"
+                "  |  Vue 3D > barre latérale (N) > MocapCam",
     "description": "Importe une capture MocapCam : squelette Mixamo (corps + doigts) "
                    "et application directe sur un personnage Mixamo",
     "category": "Animation",
@@ -25,7 +26,7 @@ import os
 import bpy
 import numpy as np
 from bpy.props import BoolProperty, EnumProperty, IntProperty, StringProperty
-from bpy_extras.io_utils import ImportHelper
+from bpy_extras.io_utils import ExportHelper, ImportHelper
 from mathutils import Matrix, Vector
 
 PREFIX = "mixamorig:"
@@ -589,6 +590,56 @@ def create_point_empties(context, d, J, start_frame=1, coll_name="MocapCam_Point
     return coll
 
 
+# --------------------------------------------------------------------------- export FBX
+
+def export_fbx(context, obj, filepath):
+    """Exporte l'armature et son animation en FBX, comme une animation Mixamo
+    « sans skin » : os 'mixamorig:', Y vers le haut, personnage face à +Z, sans os de bout
+    ajoutés, toutes les images gardées (pas de simplification)."""
+    if context.mode != "OBJECT":
+        bpy.ops.object.mode_set(mode="OBJECT")
+    for o in context.view_layer.objects:
+        o.select_set(False)
+    obj.select_set(True)
+    context.view_layer.objects.active = obj
+    bpy.ops.export_scene.fbx(
+        filepath=filepath, use_selection=True, object_types={"ARMATURE"},
+        axis_forward="-Z", axis_up="Y", apply_unit_scale=True, global_scale=1.0,
+        apply_scale_options="FBX_SCALE_NONE",
+        add_leaf_bones=False, primary_bone_axis="Y", secondary_bone_axis="X",
+        armature_nodetype="NULL", use_armature_deform_only=False,
+        bake_anim=True, bake_anim_use_all_bones=True, bake_anim_use_nla_strips=False,
+        bake_anim_use_all_actions=False, bake_anim_force_startend_keying=True,
+        bake_anim_step=1.0, bake_anim_simplify_factor=0.0)
+    return filepath
+
+
+def capture_to_fbx(src, dst, root_mode="RELATIVE"):
+    """Sans interface (blender -b) : capture .mocap.json -> FBX d'un squelette Mixamo animé."""
+    bpy.ops.wm.read_factory_settings(use_empty=True)
+    context = bpy.context
+    d, J = load_motion(src)
+    # l'animation commence au temps 0 du FBX (image 0), comme les animations Mixamo
+    _setup_scene(context, d, 0)
+    take = os.path.basename(src).replace(".mocap.json", "").replace(".json", "")
+    context.scene.name = take            # nom de l'animation (« take ») dans le FBX
+    arm = create_mixamo_armature(context, J, name="Armature")   # même nom que chez Mixamo
+    rep = apply_motion(arm, J, d["fps"], 0, root_mode, action_name=take)
+    export_fbx(context, arm, dst)
+    rep.update(frames=int(d["frame_count"]), fps=float(d["fps"]), bones=len(arm.data.bones))
+    return rep
+
+
+def main_cli():
+    """blender -b --factory-startup --python <ce fichier> -- capture.mocap.json sortie.fbx [RELATIVE|ABSOLUTE]"""
+    import sys
+    argv = sys.argv[sys.argv.index("--") + 1:] if "--" in sys.argv else []
+    if len(argv) < 2:
+        raise SystemExit("usage : -- capture.mocap.json sortie.fbx [RELATIVE|ABSOLUTE]")
+    rep = capture_to_fbx(argv[0], argv[1], argv[2] if len(argv) > 2 else "RELATIVE")
+    print(f"MOCAPCAM_FBX_OK {json.dumps(rep)}")
+
+
 # --------------------------------------------------------------------------- interface
 
 ROOT_ITEMS = [("RELATIVE", "Relatif", "Le perso démarre à sa position actuelle"),
@@ -678,6 +729,28 @@ class MOCAPCAM_OT_apply(bpy.types.Operator):
         return {"FINISHED"}
 
 
+class MOCAPCAM_OT_export_fbx(bpy.types.Operator, ExportHelper):
+    """Exporter l'armature active et son animation en FBX (réglages Mixamo)"""
+    bl_idname = "mocapcam.export_fbx"
+    bl_label = "Exporter en FBX (Mixamo)"
+    filename_ext = ".fbx"
+    filter_glob: StringProperty(default="*.fbx", options={"HIDDEN"})
+
+    @classmethod
+    def poll(cls, context):
+        o = context.active_object
+        return o is not None and o.type == "ARMATURE"
+
+    def execute(self, context):
+        try:
+            export_fbx(context, context.active_object, self.filepath)
+        except Exception as e:
+            self.report({"ERROR"}, f"Export impossible : {e}")
+            return {"CANCELLED"}
+        self.report({"INFO"}, f"FBX écrit : {self.filepath}")
+        return {"FINISHED"}
+
+
 class MOCAPCAM_PT_panel(bpy.types.Panel):
     bl_label = "MocapCam"
     bl_space_type = "VIEW_3D"
@@ -690,6 +763,7 @@ class MOCAPCAM_PT_panel(bpy.types.Panel):
         lay.separator()
         lay.prop(context.scene, "mocapcam_filepath", text="")
         lay.operator(MOCAPCAM_OT_apply.bl_idname, icon="ARMATURE_DATA")
+        lay.operator(MOCAPCAM_OT_export_fbx.bl_idname, icon="EXPORT")
         o = context.active_object
         if o is not None and o.type == "ARMATURE":
             try:
@@ -702,7 +776,11 @@ def menu_import(self, context):
     self.layout.operator(MOCAPCAM_OT_import.bl_idname, text="MocapCam (.mocap.json)")
 
 
-CLASSES = (MOCAPCAM_OT_import, MOCAPCAM_OT_apply, MOCAPCAM_PT_panel)
+def menu_export(self, context):
+    self.layout.operator(MOCAPCAM_OT_export_fbx.bl_idname, text="FBX MocapCam (Mixamo)")
+
+
+CLASSES = (MOCAPCAM_OT_import, MOCAPCAM_OT_apply, MOCAPCAM_OT_export_fbx, MOCAPCAM_PT_panel)
 
 
 def register():
@@ -710,9 +788,11 @@ def register():
         bpy.utils.register_class(c)
     bpy.types.Scene.mocapcam_filepath = StringProperty(name="Capture", subtype="FILE_PATH")
     bpy.types.TOPBAR_MT_file_import.append(menu_import)
+    bpy.types.TOPBAR_MT_file_export.append(menu_export)
 
 
 def unregister():
+    bpy.types.TOPBAR_MT_file_export.remove(menu_export)
     bpy.types.TOPBAR_MT_file_import.remove(menu_import)
     del bpy.types.Scene.mocapcam_filepath
     for c in reversed(CLASSES):
@@ -720,4 +800,8 @@ def unregister():
 
 
 if __name__ == "__main__":
-    register()
+    import sys as _sys
+    if "--" in _sys.argv:      # lancé par MocapCam : blender -b ... --python mocapcam_blender.py -- ...
+        main_cli()
+    else:
+        register()

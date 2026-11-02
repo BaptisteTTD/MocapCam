@@ -4,6 +4,7 @@
   python -m mocapcam intrinseques STUDIO CAMERA VIDEO_DAMIER
   python -m mocapcam marqueurs   STUDIO DOSSIER_PRISE
   python -m mocapcam traiter     STUDIO DOSSIER_PRISE [--force] [--decalage poco=0.12]
+  python -m mocapcam fbx         PRISE.mocap.json|DOSSIER_PRISE [--blender CHEMIN] [--absolu]
 """
 import argparse
 import os
@@ -44,11 +45,27 @@ def main(argv=None):
         p.add_argument("--decalage", action="append", default=[],
                        help="décalage manuel en secondes, ex. poco=0.120")
 
+    p = sub.add_parser("fbx", help="crée le FBX (squelette Mixamo animé) d'une prise traitée")
+    p.add_argument("capture", help="fichier .mocap.json ou dossier de la prise")
+    p.add_argument("--blender", help="chemin de blender.exe (sinon recherche automatique)")
+    p.add_argument("--absolu", action="store_true",
+                   help="garder la position dans la zone de capture (sinon le perso part de l'origine)")
+
     a = ap.parse_args(argv)
     try:
         if a.cmd == "studio":
             from . import studio_server
             studio_server.run(a.studio, a.captures, a.port, open_ui=not a.sans_fenetre)
+        elif a.cmd == "fbx":
+            from . import fbx
+            src = a.capture
+            if os.path.isdir(src):
+                found = [f for f in os.listdir(src) if f.endswith(".mocap.json")]
+                if not found:
+                    raise FileNotFoundError(f"Aucun .mocap.json dans {src} : traitez d'abord la prise.")
+                src = os.path.join(src, found[0])
+            if not fbx.export(src, blender=a.blender, root_mode="ABSOLUTE" if a.absolu else "RELATIVE"):
+                return 1
         elif a.cmd == "init":
             path = pipeline.init_studio(a.studio)
             print(f"Studio créé : {path}\nMesurez la position de vos boules et éditez ce fichier.")

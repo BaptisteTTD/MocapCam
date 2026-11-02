@@ -155,6 +155,7 @@ class Studio:
                     pass
             out.append(dict(name=d, videos=vids, processed=os.path.exists(res),
                             result=res if os.path.exists(res) else None,
+                            fbx=os.path.exists(os.path.join(p, f"{d}.fbx")),
                             created=meta.get("created"), duration=meta.get("duration_s")))
         return out[:50]
 

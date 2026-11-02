@@ -7,7 +7,7 @@ import time
 import cv2
 import numpy as np
 
-from . import autocalib, intrinsics, markers as mk, pose2d, sync, triangulate, video
+from . import autocalib, fbx, intrinsics, markers as mk, pose2d, sync, triangulate, video
 from .skeleton import JOINT_NAMES
 
 DEFAULT_STUDIO = {
@@ -23,6 +23,8 @@ DEFAULT_STUDIO = {
         {"name": "E", "color": "rouge", "position": [0.0, 1.25, 0.0]},
     ],
     "volume": {"margin": 0.5, "height": 2.3},
+    "blender": "",          # chemin de blender.exe pour l'export FBX (vide = recherche automatique)
+    "fbx": True,            # créer <prise>.fbx (squelette Mixamo animé) après le traitement
     "pose": {"mode": "performance", "device": "cpu", "backend": "onnxruntime"},
     "reconstruction": {"score_body": 0.3, "score_hands": 0.3, "score_face": 0.5,
                        "max_reproj_px": 25.0},
@@ -348,7 +350,7 @@ def process_take(studio_dir, take_dir, force=False, manual_delays=None, only_cal
         f"erreur médiane {stats['median_reproj_px'] or float('nan'):.1f} px, "
         f"inversions gauche/droite corrigées : {stats['lr_swaps_fixed']}")
 
-    log("6/6 Nettoyage, lissage et export…")
+    log("6/6 Nettoyage, lissage et export (.mocap.json + .fbx)…")
     X = triangulate.postprocess(X, fps, cfg["filtering"])
     ok = np.isfinite(X[..., 0])
     stats["coverage_body"] = float(ok[:, :23].mean())
@@ -368,6 +370,8 @@ def process_take(studio_dir, take_dir, force=False, manual_delays=None, only_cal
     out = export_motion(os.path.join(take_dir, f"{name}.mocap.json"), X, fps, cams, cfg, vol, stats)
     with open(os.path.join(work, "rapport.json"), "w", encoding="utf-8") as f:
         json.dump(stats, f, indent=2, default=_jsonable)
+    if cfg.get("fbx", True):
+        fbx.export(out, blender=cfg.get("blender") or None, log=log)
     log(f"Terminé en {time.time() - t0:.0f} s -> {out}")
     log(f"  couverture corps {stats['coverage_body'] * 100:.0f} %, mains {stats['coverage_hands'] * 100:.0f} %")
     return out

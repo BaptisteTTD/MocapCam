@@ -62,8 +62,21 @@ poses[1]["kp"] = np.concatenate([np.full_like(poses[1]["kp"][:2], np.nan), poses
 poses[1]["sc"] = np.concatenate([np.zeros_like(poses[1]["sc"][:2]), poses[1]["sc"]])
 for cam, p in zip(("iphone", "poco"), poses):
     np.savez_compressed(os.path.join(work, f"pose2d_{cam}_60.npz"), kp=p["kp"], sc=p["sc"], width=ts.W, height=ts.H)
+# faux Blender (le vrai n'est pas installé ici) : lance le script demandé avec le module bpy
+fake = os.path.join(D, "blender")
+with open(fake, "w") as f:
+    f.write(f"#!{sys.executable}\n"
+            "import runpy, sys\n"
+            "a = sys.argv[1:]\n"
+            "script = a[a.index('--python') + 1]\n"
+            "sys.argv = [script] + a[a.index('--'):]\n"
+            "runpy.run_path(script, run_name='__main__')\n")
+os.chmod(fake, 0o755)
+os.environ["BLENDER"] = fake
 out = run("traiter", studio, take)
 res = os.path.join(take, "prise1.mocap.json")
 assert os.path.exists(res)
+assert "FBX :" in out and os.path.exists(os.path.join(take, "prise1.fbx")), "FBX non créé"
+print("OK FBX :", os.path.join(take, "prise1.fbx"), f"{os.path.getsize(os.path.join(take, 'prise1.fbx')) / 1e6:.1f} Mo")
 print("OK ligne de commande :", res, f"{os.path.getsize(res) / 1e6:.1f} Mo")
 print("Dossier :", D)
