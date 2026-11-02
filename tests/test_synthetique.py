@@ -350,6 +350,23 @@ def test_reconstruction(X_gt):
        f"erreur médiane {eb[0]:.1f} mm (brut {eb_raw[0]:.1f}), 95 % < {eb[1]:.1f} mm, couverture {eb[2] * 100:.0f} %")
     ok("triangulation mains", eh[0] < 10 and eh[2] > 0.9,
        f"erreur médiane {eh[0]:.1f} mm, 95 % < {eh[1]:.1f} mm, couverture {eh[2] * 100:.0f} %")
+    # affinage global (os constants, fluidité, pieds posés) à partir du même départ
+    from mocapcam import motion_opt
+    _, _, ch = triangulate.reconstruct(cams, poses, delays, FPS, vol, cfg["reconstruction"],
+                                       log=lambda *a: None, return_choices=True)
+    Xr, ost = motion_opt.optimize(Xs, cams, poses, ch, FPS, dict(cfg["reconstruction"], **cfg["refine"]),
+                                  log=lambda *a: None)
+    eo, eho = err(body_idx, Xr), err(HAND_IDX, Xr)
+    def jit(A, idx):
+        a = A[2:, idx] - 2 * A[1:-1, idx] + A[:-2, idx]
+        return np.nanmedian(np.linalg.norm(a, axis=-1)) * 1000
+    lens = np.linalg.norm(Xr[:, INDEX["l_hip"]] - Xr[:, INDEX["l_knee"]], axis=1)
+    cv = np.nanstd(lens) / np.nanmean(lens)
+    ok("affinage global du mouvement", eo[0] < eb[0] * 1.15 and eo[2] > 0.99 and eho[0] < eh[0] * 1.15
+       and cv < 0.01 and jit(Xr, body_idx) < jit(Xs, body_idx),
+       f"corps {eb[0]:.1f} -> {eo[0]:.1f} mm, mains {eh[0]:.1f} -> {eho[0]:.1f} mm (couverture {eho[2] * 100:.0f} %), "
+       f"accélération résiduelle {jit(Xs, body_idx):.2f} -> {jit(Xr, body_idx):.2f} mm/image², cuisse constante à "
+       f"{cv * 100:.2f} %")
     ok("inversions G/D + personne parasite", stats["lr_swaps_fixed"] >= (X_gt.shape[0] // 7) - 2,
        f"{stats['lr_swaps_fixed']} inversions corrigées, {stats['frames_ok']}/{stats['frames']} images")
     cams_full = [dict(c, name=n) for n, c in zip(["iphone", "poco"], cams)]

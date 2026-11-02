@@ -48,6 +48,25 @@ def triangulate(xn, w, Rt):
     return X, err
 
 
+def score_reference(poses):
+    """Score typique d'un point bien vu (médiane des points du corps, toutes vues). L'échelle
+    des scores dépend du détecteur (RTMW donne ~1 à 7) : on raisonne en score relatif."""
+    vals = []
+    for p in poses:
+        s = np.asarray(p["sc"])[..., :23]
+        s = s[np.isfinite(s) & (s > 0)]
+        if s.size:
+            vals.append(s)
+    return float(np.median(np.concatenate(vals))) if vals else 1.0
+
+
+def score_weight(s, ref):
+    """Poids d'un point 2D d'après son score relatif : 0 en dessous de la moitié du score
+    typique (point deviné, souvent faux de plusieurs dizaines de pixels), 1 au-dessus de 0,9×."""
+    with np.errstate(invalid="ignore"):
+        return np.clip((np.asarray(s, float) / ref - 0.5) / 0.4, 0.0, 1.0)
+
+
 def _thresholds(cfg):
     thr = np.full(133, cfg.get("score_body", 0.3), float)
     thr[HAND_IDX] = cfg.get("score_hands", 0.3)
@@ -95,6 +114,7 @@ def reconstruct(cams, poses, delays, fps, volume, cfg=None, log=print, frames=No
     Rt = np.stack([np.hstack([c["R"], np.asarray(c["t"], float).reshape(3, 1)]) for c in cams])
     fx = np.array([c["K"][0, 0] for c in cams])
     thr = _thresholds(cfg)
+    sref = score_reference(poses)
     max_err_px = cfg.get("max_reproj_px", 25.0)
     w_struct = cfg.get("structure_weight", 40.0)
     lo, hi = volume
@@ -116,7 +136,7 @@ def reconstruct(cams, poses, delays, fps, volume, cfg=None, log=print, frames=No
             x, s = per_view[v][combo[v]][:2]
             if v > 0 and flips[v - 1]:
                 x, s = x[SWAP_LR], s[SWAP_LR]
-            xs[v], ws[v] = x, np.where(s >= thr, s, 0.0)
+            xs[v], ws[v] = x, np.where(s >= thr, score_weight(s, sref), 0.0)
         return xs, ws
 
     # 1) toutes les hypothèses de chaque image

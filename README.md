@@ -14,7 +14,7 @@ Trois éléments :
 iPhone + Poco ─► calage par le bip du PC ─► position + objectif des caméras grâce aux boules au sol
               ─► détection 2D corps + mains (IA RTMW) ─► synchro fine par le mouvement
               ─► affinage des caméras avec le corps
-              ─► triangulation 3D ─► lissage
+              ─► triangulation 3D ─► affinage global du mouvement (os rigides, fluidité, pieds posés)
               ─► prise.fbx (squelette Mixamo animé) ─► add-on Blender : retarget sur votre personnage
 ```
 
@@ -169,11 +169,13 @@ Si vous filmez avec l'appareil photo normal des téléphones :
 2. Copiez les vidéos en qualité d'origine dans un dossier de prise, nommées `iphone.mov` et `poco.mp4`.
 3. Glissez le dossier sur **`Verifier les boules.bat`** pour vérifier, puis sur **`Traiter une prise.bat`**.
 
-Les calculs déjà faits sont gardés en cache dans `prise\mocapcam\` : un deuxième lancement est
-donc quasi instantané. L'option `--force` refait tout.
+La détection 2D est gardée en cache dans `prise\mocapcam\` : un deuxième lancement ne la refait
+pas. L'option `--force` refait tout.
 
 **Durée** : la détection 2D est l'étape longue. Sur processeur, comptez plusieurs minutes par
-minute de vidéo. Avec une carte NVIDIA, installez `onnxruntime-gpu` et mettez `"device": "cuda"`
+minute de vidéo. L'affinage global du mouvement (corps puis chaque main, sur toute la prise
+d'un coup) ajoute environ 5 minutes pour 20 s de prise : c'est lui qui rend le bassin immobile
+quand l'acteur ne bouge pas, les os de longueur constante et les doigts sans tressautements. Avec une carte NVIDIA, installez `onnxruntime-gpu` et mettez `"device": "cuda"`
 dans `studio.json`. Pour aller plus vite au détriment de la précision : `"mode": "balanced"`.
 
 **Si le son ne synchronise pas** (confiance faible), indiquez le décalage à la main :
@@ -232,7 +234,9 @@ Le retarget marche avec n'importe quelle animation au squelette Mixamo, pas seul
 | `markers` | ajouter des boules (6 à 8) améliore la première estimation. Une boule posée sur un objet de hauteur connue (Z ≠ 0) l'améliore beaucoup. |
 | `markers[].hsv` | couleur sur mesure `[teinte 0-180, tolérance, saturation min, luminosité min]` |
 | `reconstruction.score_hands` | seuil de confiance des mains (augmentez-le si les doigts tremblent) |
-| `filtering.cutoff_body_hz` / `cutoff_hands_hz` | lissage (plus bas = plus lisse) |
+| `filtering.cutoff_body_hz` / `cutoff_hands_hz` | lissage de la première estimation (plus bas = plus lisse) |
+| `refine.smooth_body` / `smooth_hands` | fluidité imposée par l'affinage global, corps et doigts (plus haut = plus lisse, 2 et 8 par défaut) |
+| `refine.enabled` | `false` pour sauter l'affinage global (traitement plus rapide, mouvement moins propre) |
 | `filtering.max_gap_s` | durée maximale d'un trou comblé par interpolation |
 
 ## 10. Dépannage

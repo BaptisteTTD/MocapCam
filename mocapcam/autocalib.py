@@ -32,9 +32,11 @@ def _project(cp, X, cx, cy, f0):
 
 
 def collect(cams, poses, delays, fps, volume, cfg, max_frames=240, min_score=0.5):
+    """min_score : poids minimal (score relatif, voir triangulate.score_weight)."""
     """Sélectionne des images, la bonne personne et l'éventuelle inversion G/D,
     et renvoie les observations pixel des articulations du corps."""
     T = poses[0]["kp"].shape[0]
+    sref = tri.score_reference(poses)
     frames = np.linspace(0, T - 1, min(max_frames, T)).astype(int)
     X, _, choices = tri.reconstruct(cams, poses, delays, fps, volume, cfg,
                                     log=lambda *a: None, frames=frames, return_choices=True)
@@ -50,7 +52,7 @@ def collect(cams, poses, delays, fps, volume, cfg, max_frames=240, min_score=0.5
             kp, sc = poses[v]["kp"][j, p], poses[v]["sc"][j, p]
             if v > 0 and flips[v - 1]:
                 kp, sc = kp[SWAP_LR], sc[SWAP_LR]
-            per_cam.append((kp, sc))
+            per_cam.append((kp, tri.score_weight(sc, sref)))
         for jt in BODY_IDX:
             if not np.isfinite(X[i, jt]).all():
                 continue

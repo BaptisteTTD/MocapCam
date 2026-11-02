@@ -187,10 +187,13 @@ def bone_specs():
             S[f"{side}HandThumb{k + 1}"] = (
                 lambda J, h=h, a=1 + k: J[f"{h}_{a + 1}"] - J[f"{h}_{a}"],
                 lambda J, h=h: np.cross(J[f"{h}_9"] - J[f"{h}_0"], J[f"{h}_5"] - J[f"{h}_17"]))
+        # le genou regarde du côté où pointe le pied : la torsion de la cuisse suit le pied
+        # quand la jambe est tendue (le plan hanche-genou-cheville n'est alors pas défini)
         S[f"{side}UpLeg"] = (
             lambda J, s=s: J[f"{s}_knee"] - J[f"{s}_hip"],
             lambda J, s=s: np.cross(J[f"{s}_knee"] - J[f"{s}_hip"],
-                                    nrm(J[f"{s}_ankle"] - J[f"{s}_knee"]) - 0.3 * nrm(J["fwd_t"])))
+                                    nrm(J[f"{s}_ankle"] - J[f"{s}_knee"])
+                                    - nrm(nrm(J[f"{s}_toes"] - J[f"{s}_heel"]) + 0.3 * nrm(J["fwd_t"]))))
         S[f"{side}Leg"] = (lambda J, s=s: J[f"{s}_ankle"] - J[f"{s}_knee"],
                            lambda J, s=s: nrm(J[f"{s}_toes"] - J[f"{s}_heel"]) + 0.3 * nrm(J["fwd_t"]))
         S[f"{side}Foot"] = (lambda J, s=s: J[f"{s}_toes"] - J[f"{s}_ankle"],
@@ -336,6 +339,9 @@ def apply_motion(obj, J_mocap, fps, start_frame=1, root_mode="RELATIVE", action_
                     if short.endswith("Hand"):
                         dm = smooth_vectors(dm, fps, cutoff=5.0, keep_norm=True)
                     rm = stable_twist(dm, rm, fps)
+                elif clean and short in LEG_TWIST:
+                    # torsion des jambes et des pieds : lissée autour de l'os (petites rotations)
+                    rm = stable_twist(dm, rm, fps, cutoff=4.0, spike_deg=25.0, win=11)
                 Fm, valid = make_frames(dm, rm)
                 Fr, vr = make_frames(dfn(Jr), rfn(Jr))
             Fm = hold_fill(Fm, valid) if bool(vr) else None
@@ -430,6 +436,9 @@ def lowpass(x, fps, cutoff):
 
 HAND_DRIVEN = {f"{s}{b}" for s in ("Left", "Right") for b in
                ["ForeArm", "Hand"] + [f"Hand{f}{k}" for f in FINGERS for k in (1, 2, 3)]}
+
+
+LEG_TWIST = {f"{s}{b}" for s in ("Left", "Right") for b in ("UpLeg", "Leg", "Foot")}
 
 
 def smooth_vectors(v, fps, cutoff=3.0, spike_deg=25.0, win=9, keep_norm=False):

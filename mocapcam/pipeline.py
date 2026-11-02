@@ -7,7 +7,7 @@ import time
 import cv2
 import numpy as np
 
-from . import autocalib, fbx, intrinsics, markers as mk, pose2d, sync, syncbody, triangulate, video
+from . import autocalib, fbx, intrinsics, markers as mk, motion_opt, pose2d, sync, syncbody, triangulate, video
 from .skeleton import JOINT_NAMES
 
 DEFAULT_STUDIO = {
@@ -31,6 +31,9 @@ DEFAULT_STUDIO = {
                        "max_reproj_px": 25.0},
     "filtering": {"max_jump_m": 0.15, "max_gap_s": 0.3,
                   "cutoff_body_hz": 6.0, "cutoff_hands_hz": 8.0},
+    # affinage global du mouvement (os de longueur constante, fluidité, pieds posés)
+    "refine": {"enabled": True, "smooth_body": 2.0, "smooth_hands": 8.0, "bone_weight": 2000.0,
+               "contact_weight": 2500.0, "tie_weight": 3000.0},
 }
 
 
@@ -353,13 +356,13 @@ def process_take(studio_dir, take_dir, force=False, manual_delays=None, only_cal
             f"-> {ac['reproj_after_px']:.1f} px")
         for c in ac["cameras"]:
             log(f"  {c['name']} : focale {c['focal_px']:.0f} px, déformation k1 {c['k1']:+.3f} k2 {c['k2']:+.3f}")
-    X, stats = triangulate.reconstruct(cams, poses, delays, fps, vol,
-                                       cfg["reconstruction"], log)
+    X, stats, choices = triangulate.reconstruct(cams, poses, delays, fps, vol,
+                                                cfg["reconstruction"], log, return_choices=True)
     log(f"  images reconstruites : {stats['frames_ok']}/{stats['frames']}, "
         f"erreur médiane {stats['median_reproj_px'] or float('nan'):.1f} px, "
         f"inversions gauche/droite corrigées : {stats['lr_swaps_fixed']}")
 
-    log("6/6 Nettoyage, lissage et export FBX…")
+    log("6/6 Nettoyage, affinage global du mouvement (quelques minutes), export FBX…")
     X = triangulate.postprocess(X, fps, cfg["filtering"])
     T0 = X.shape[0]
     X, first = triangulate.trim_take(X, fps)
@@ -367,6 +370,10 @@ def process_take(studio_dir, take_dir, force=False, manual_delays=None, only_cal
     if X.shape[0] < T0:
         log(f"  début/fin sans acteur coupés : {first / fps:.1f} s au début, "
             f"{(T0 - first - X.shape[0]) / fps:.1f} s à la fin")
+    rcfg = dict(cfg["reconstruction"], **cfg.get("refine", {}))
+    if rcfg.get("enabled", True):
+        X, stats["global_refine"] = motion_opt.optimize(X, cams, poses, choices, fps, rcfg, log,
+                                                        frames=np.arange(first, first + X.shape[0]))
     ok = np.isfinite(X[..., 0])
     stats["coverage_body"] = float(ok[:, :23].mean())
     stats["coverage_hands"] = float(ok[:, 91:].mean())
