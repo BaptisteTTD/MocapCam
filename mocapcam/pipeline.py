@@ -7,7 +7,7 @@ import time
 import cv2
 import numpy as np
 
-from . import autocalib, fbx, intrinsics, markers as mk, pose2d, sync, triangulate, video
+from . import autocalib, fbx, intrinsics, markers as mk, pose2d, sync, syncbody, triangulate, video
 from .skeleton import JOINT_NAMES
 
 DEFAULT_STUDIO = {
@@ -25,6 +25,7 @@ DEFAULT_STUDIO = {
     "volume": {"margin": 0.5, "height": 2.3},
     "blender": "",          # chemin de blender.exe pour l'export FBX (vide = recherche automatique)
     "fbx": True,            # créer <prise>.fbx (squelette Mixamo animé) après le traitement
+    "sync_by_motion": True,  # affiner la synchro du bip avec le mouvement de l'acteur
     "pose": {"mode": "performance", "device": "cpu", "backend": "onnxruntime"},
     "reconstruction": {"score_body": 0.3, "score_hands": 0.3, "score_face": 0.5,
                        "max_reproj_px": 25.0},
@@ -335,6 +336,12 @@ def process_take(studio_dir, take_dir, force=False, manual_delays=None, only_cal
     # toutes les caméras ramenées sur la même base de temps (décalage sous-image inclus)
     names = list(norm)
     T = int(poses[0]["kp"].shape[0] / cam_fps[names[0]] * fps)
+    if not manual_delays and cfg.get("sync_by_motion", True):
+        # le bip date le son ; l'image d'un téléphone peut être décalée de son propre son
+        wide = not ((meta or {}).get("chirps_at_pc") or (meta or {}).get("chirp_at_pc"))
+        delays = syncbody.refine(cams, poses, names, [cam_fps[n] for n in names], fps, delays, T, vol,
+                                 cfg["reconstruction"], log, search_s=1.0 if wide else 0.35)
+    delays_body = list(delays)
     poses = [triangulate.resample_pose(p, cam_fps[n], fps, d, T) for p, n, d in zip(poses, names, delays)]
     delays = [0.0] * len(poses)
 
@@ -363,7 +370,8 @@ def process_take(studio_dir, take_dir, force=False, manual_delays=None, only_cal
     ok = np.isfinite(X[..., 0])
     stats["coverage_body"] = float(ok[:, :23].mean())
     stats["coverage_hands"] = float(ok[:, 91:].mean())
-    stats["delays_s"] = dict(zip(norm.keys(), delays_s))
+    stats["delays_s"] = dict(zip(norm.keys(), delays_body))
+    stats["delays_sound_s"] = dict(zip(norm.keys(), delays_s))
     stats["camera_fps"] = cam_fps
     stats["autocalibration"] = ac
     h = actor_height(X)

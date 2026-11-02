@@ -360,6 +360,40 @@ def test_reconstruction(X_gt):
     return path
 
 
+# --------------------------------------------------------------------------- 6b. synchro par le mouvement
+
+def test_sync_motion(X_gt):
+    """Le son d'un téléphone est décalé de son image (90 ms ici, comme mesuré sur un vrai
+    Poco) : le bip donne donc un décalage faux. La synchro par le mouvement doit le corriger."""
+    from mocapcam import syncbody
+    T = X_gt.shape[0]
+    true_d = 0.090
+    t = np.arange(T)
+    poses = []
+    for ci, (R, tc) in enumerate(CAMS_TRUE):
+        # image j de la caméra 1 = instant j/FPS - true_d de la référence
+        src = t - (true_d * FPS if ci == 1 else 0.0)
+        Xs = np.full_like(X_gt, np.nan)
+        for j in range(X_gt.shape[1]):
+            valid = np.isfinite(X_gt[:, j, 0])
+            if valid.sum() > 2:
+                for k in range(3):
+                    Xs[:, j, k] = np.interp(src, t[valid], X_gt[valid, j, k], left=np.nan, right=np.nan)
+        uv = project(np.nan_to_num(Xs), R, tc, K_TRUE[ci], DIST_TRUE[ci]) + RNG.normal(0, 1.5, (T, 133, 2))
+        sc = np.where(np.isfinite(Xs[..., 0]), 0.8, 0.0)
+        uv[~np.isfinite(Xs[..., 0])] = np.nan
+        poses.append(dict(kp=uv[:, None].astype(np.float32), sc=sc[:, None].astype(np.float32), width=W, height=H))
+    cams = [dict(K=K_TRUE[i], dist=DIST_TRUE[i], R=R, t=tc) for i, (R, tc) in enumerate(CAMS_TRUE)]
+    mlist = [dict(m, position=[m["position"][0], m["position"][1], 0.01]) for m in pipeline.DEFAULT_STUDIO["markers"]]
+    vol = mk.volume_box(mlist, 0.5, 2.3)
+    logs = []
+    d = syncbody.refine(cams, poses, ["cam0", "cam1"], [FPS, FPS], FPS, [0.0, 0.0], T, vol,
+                        pipeline.DEFAULT_STUDIO["reconstruction"], log=logs.append)
+    err = abs(d[1] - true_d) * 1000
+    ok("synchro par le mouvement (son décalé de l'image)", err < 4,
+       f"décalage trouvé {d[1] * 1000:.1f} ms (vrai {true_d * 1000:.0f} ms, bip : 0 ms) ; " + (logs[-1].strip() if logs else ""))
+
+
 # --------------------------------------------------------------------------- 7. export FBX
 
 def test_fbx(path):
@@ -599,6 +633,7 @@ if __name__ == "__main__":
     X_gt = make_ground_truth()
     path = test_reconstruction(X_gt)
     test_ultrawide(X_gt)
+    test_sync_motion(X_gt)
     test_imprecise_balls(X_gt)
     test_blender(path, X_gt)
     test_fbx(path)

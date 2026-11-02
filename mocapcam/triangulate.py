@@ -6,7 +6,7 @@ import cv2
 import numpy as np
 from scipy.signal import butter, filtfilt
 
-from .skeleton import CORE_IDX, SWAP_LR, HAND_IDX, FACE_IDX, BODY_IDX, INDEX
+from .skeleton import CORE_IDX, SWAP_LR, HAND_IDX, FACE_IDX, BODY_IDX, INDEX, LHAND_IDX, RHAND_IDX
 
 
 def undistort_normalized(pts, K, dist):
@@ -82,7 +82,7 @@ def _structure_dev(lengths, ref):
 
 
 def reconstruct(cams, poses, delays, fps, volume, cfg=None, log=print, frames=None,
-                return_choices=False):
+                return_choices=False, return_errors=False):
     """cams : liste de dict(K, dist, R, t). poses : liste de dict(kp (T,P,133,2), sc (T,P,133)).
     delays[v] : décalage (s) de la vue v par rapport à la vue 0 (référence).
     Retourne X (T,133,3) en mètres dans le repère du sol, et des statistiques.
@@ -193,6 +193,7 @@ def reconstruct(cams, poses, delays, fps, volume, cfg=None, log=print, frames=No
 
     choices = {}
     swaps = 0
+    E_all = np.full((T, len(CORE_IDX)), np.nan)   # erreur de reprojection (px) des points du corps
     for i, c in sel.items():
         per_view = views_of[i]
         xs, ws = build(per_view, c["combo"], c["flips"])
@@ -201,6 +202,7 @@ def reconstruct(cams, poses, delays, fps, volume, cfg=None, log=print, frames=No
         swaps += int(any(c["flips"]))
         X, err = triangulate(xs, ws, Rt)
         e_px = np.nanmax(np.where(ws > 0, err * fx[:, None], 0), axis=0)
+        E_all[i] = np.where(np.isfinite(X[CORE_IDX, 0]), e_px[CORE_IDX], np.nan)
         X[e_px > max_err_px] = np.nan
         X_all[i] = X
         chosen_err[i] = c["med"]
@@ -210,6 +212,8 @@ def reconstruct(cams, poses, delays, fps, volume, cfg=None, log=print, frames=No
                  median_reproj_px=float(np.nanmedian(chosen_err)) if np.isfinite(chosen_err).any() else None,
                  lr_swaps_fixed=swaps,
                  body_lengths_m=None if ref is None else [round(float(v), 3) for v in ref])
+    if return_errors:
+        return X_all, stats, E_all
     if return_choices:
         return X_all, stats, choices
     return X_all, stats
@@ -280,8 +284,34 @@ def smooth(X, fps, cutoff_body=6.0, cutoff_hands=8.0, order=2):
     return out
 
 
+def clean_hands(X, rel=0.35, wrist_tol=0.6):
+    """Une main est un objet rigide : longueur de paume (poignet -> base du majeur) et largeur
+    des jointures (index -> auriculaire) constantes. Quand elles s'écartent de plus de 35 % de
+    leur valeur habituelle (main vue par la tranche, floue, ou mal reconnue), ou que le poignet
+    de la main ne colle pas à celui du corps, la main de cette image est écartée : elle sera
+    interpolée entre les images voisines au lieu de faire tourner l'avant-bras d'un coup."""
+    out = X.copy()
+    n_bad = 0
+    for side, hidx in (("l", LHAND_IDX), ("r", RHAND_IDX)):
+        h = lambda k: X[:, hidx[k]]
+        palm = np.linalg.norm(h(0) - h(9), axis=1)
+        kn = np.linalg.norm(h(5) - h(17), axis=1)
+        wr = np.linalg.norm(h(0) - X[:, INDEX[f"{side}_wrist"]], axis=1)
+        if np.isfinite(palm).sum() < 10:
+            continue
+        rp, rk = np.nanmedian(palm), np.nanmedian(kn)
+        with np.errstate(invalid="ignore"):
+            bad = ((np.abs(palm / rp - 1) > rel) | (np.abs(kn / rk - 1) > rel)
+                   | (wr > wrist_tol * rp))
+        bad &= np.isfinite(palm)
+        out[np.ix_(bad, hidx)] = np.nan
+        n_bad += int(bad.sum())
+    return out, n_bad
+
+
 def postprocess(X, fps, cfg=None):
     cfg = cfg or {}
+    X, _ = clean_hands(X)
     X = remove_spikes(X, fps, max_jump=cfg.get("max_jump_m", 0.15))
     X = fill_gaps(X, max_gap=int(cfg.get("max_gap_s", 0.3) * fps))
     X = smooth(X, fps, cfg.get("cutoff_body_hz", 6.0), cfg.get("cutoff_hands_hz", 8.0))

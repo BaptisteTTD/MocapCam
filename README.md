@@ -12,7 +12,8 @@ Trois éléments :
 
 ```
 iPhone + Poco ─► calage par le bip du PC ─► position + objectif des caméras grâce aux boules au sol
-              ─► détection 2D corps + mains (IA RTMW) ─► affinage des caméras avec le corps
+              ─► détection 2D corps + mains (IA RTMW) ─► synchro fine par le mouvement
+              ─► affinage des caméras avec le corps
               ─► triangulation 3D ─► lissage
               ─► prise.mocap.json + prise.fbx (squelette Mixamo animé)
 ```
@@ -221,6 +222,7 @@ contrôler le résultat.
 | `cameras` | noms des caméras, donc des fichiers vidéo. Ajoutez un 3ᵉ téléphone ici. |
 | `marker_height` | hauteur du centre visible des boules : 0,4 × le rayon pour une demi-boule (0,016 m pour une boule de 8 cm coupée en deux) |
 | `markers[].position` | positions en mètres. Pour un carré, réglez plutôt le côté dans Studio. |
+| `sync_by_motion` | `true` : après le bip, la synchro est affinée avec le mouvement de l'acteur. Dans un téléphone, le son et l'image peuvent être décalés de plusieurs dizaines de ms (100 ms mesurées sur un Poco X3) : sans cette correction, les gestes rapides tremblent. |
 | `blender` | chemin de `blender.exe` pour le FBX, si Blender n'est pas trouvé tout seul |
 | `fbx` | `false` pour ne pas créer de FBX |
 | `markers` | ajouter des boules (6 à 8) améliore la première estimation. Une boule posée sur un objet de hauteur connue (Z ≠ 0) l'améliore beaucoup. |
@@ -246,6 +248,7 @@ contrôler le résultat.
 | Vidéo plus serrée que l'aperçu | Mettez à jour l'app (1.0.5 ou plus). |
 | « Pas assez de points communs » | L'acteur est trop peu visible par les deux caméras à la fois. Rapprochez les caméras de l'axe de jeu. |
 | Doigts qui tremblent | Rapprochez les caméras, éclairez mieux, baissez `cutoff_hands_hz` à 5–6. |
+| Bras qui tressautent dans les gestes rapides | Vérifiez dans le journal la ligne « synchro fine par le mouvement » ; montez la lumière (moins de flou de bougé) et bloquez l'exposition avec l'obturation rapide. |
 | Bras ou jambe qui « saute » | Membre caché pour une caméra : ajoutez un 3ᵉ téléphone, ou orientez l'action face aux caméras. |
 
 ## Tests

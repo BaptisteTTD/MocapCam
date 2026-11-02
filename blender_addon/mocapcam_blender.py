@@ -330,6 +330,12 @@ def apply_motion(obj, J_mocap, fps, start_frame=1, root_mode="RELATIVE", action_
                 rv = np.isfinite(rm).all(-1) & (np.linalg.norm(np.nan_to_num(rm), axis=-1) > 1e-9)
                 if rv.any() and not rv.all():
                     rm = hold_fill(rm, rv)
+                if short in HAND_DRIVEN:
+                    # la torsion vient des points de la main (petits, bruités) : lissée plus fort
+                    # que la direction de l'os, qui vient du coude et du poignet (fiables)
+                    if short.endswith("Hand"):
+                        dm = smooth_vectors(dm, fps, cutoff=5.0, keep_norm=True)
+                    rm = stable_twist(dm, rm, fps)
                 Fm, valid = make_frames(dm, rm)
                 Fr, vr = make_frames(dfn(Jr), rfn(Jr))
             Fm = hold_fill(Fm, valid) if bool(vr) else None
@@ -352,7 +358,7 @@ def apply_motion(obj, J_mocap, fps, start_frame=1, root_mode="RELATIVE", action_
             B = np.einsum("ij,tjk->tik", Rb.T, Mb)
         if delta is None and p is not None:
             continue  # os non piloté : on laisse sa pose de repos
-        q = mat_to_quat(B)
+        q = clean_rotations(mat_to_quat(B), fps)
         dp = f'pose.bones["{b.name}"].rotation_quaternion'
         for k in range(4):
             channels.append((dp, k, q[:, k], b.name))
@@ -392,6 +398,148 @@ def apply_motion(obj, J_mocap, fps, start_frame=1, root_mode="RELATIVE", action_
     name = action_name or f"MocapCam_{obj.name}"
     write_action(obj, name, start_frame, channels)
     return report
+
+
+def lowpass(x, fps, cutoff):
+    """Butterworth d'ordre 2, aller-retour (sans décalage), en numpy pur (Blender n'a pas
+    scipy). x : (T, C)."""
+    x = np.asarray(x, float)
+    T = len(x)
+    if cutoff >= fps / 2 or T < 8:
+        return x
+    K = np.tan(np.pi * cutoff / fps)
+    nrm_ = 1.0 / (1.0 + np.sqrt(2.0) * K + K * K)
+    b0 = K * K * nrm_
+    b1, b2 = 2 * b0, b0
+    a1 = 2 * (K * K - 1) * nrm_
+    a2 = (1 - np.sqrt(2.0) * K + K * K) * nrm_
+    n = int(min(T - 1, max(3, 3 * fps / cutoff)))
+    xp = np.concatenate([2 * x[0] - x[n:0:-1], x, 2 * x[-1] - x[-2:-n - 2:-1]])
+
+    def run(sig):
+        y = np.empty_like(sig)
+        y[0], y[1] = sig[0], sig[1]
+        for i in range(2, len(sig)):
+            y[i] = b0 * sig[i] + b1 * sig[i - 1] + b2 * sig[i - 2] - a1 * y[i - 1] - a2 * y[i - 2]
+        return y
+
+    y = run(run(xp)[::-1])[::-1]
+    return y[n:n + T]
+
+
+HAND_DRIVEN = {f"{s}{b}" for s in ("Left", "Right") for b in
+               ["ForeArm", "Hand"] + [f"Hand{f}{k}" for f in FINGERS for k in (1, 2, 3)]}
+
+
+def smooth_vectors(v, fps, cutoff=3.0, spike_deg=25.0, win=9, keep_norm=False):
+    """Série de vecteurs (T,3) : directions aberrantes (écart à la médiane locale > spike_deg)
+    remplacées par interpolation, puis passe-bas. Les trous (main cachée) sont comblés en
+    tournant progressivement d'une direction connue à la suivante, au lieu de figer la main
+    puis de la faire sauter quand elle réapparaît."""
+    v = np.asarray(v, float)
+    T = len(v)
+    ok = np.isfinite(v).all(1) & (np.linalg.norm(np.nan_to_num(v), axis=1) > 1e-9)
+    if ok.sum() < 2 * win:
+        return v
+    n = np.linalg.norm(v, axis=1, keepdims=True)
+    u = np.where(ok[:, None], v / np.where(n > 0, n, 1), np.nan)
+    idx = np.where(ok)[0]
+    t = np.arange(T)
+    uf = np.stack([np.interp(t, idx, u[idx, k]) for k in range(3)], 1)
+    pad = win // 2
+    up = np.concatenate([np.repeat(uf[:1], pad, 0), uf, np.repeat(uf[-1:], pad, 0)])
+    from numpy.lib.stride_tricks import sliding_window_view
+    med = np.median(sliding_window_view(up, win, axis=0), axis=-1)
+    med /= np.linalg.norm(med, axis=1, keepdims=True)
+    dev = np.degrees(np.arccos(np.clip(np.sum(uf * med, 1), -1, 1)))
+    good = ok & (dev <= spike_deg)
+    if good.sum() >= 2:
+        g = np.where(good)[0]
+        uf = np.stack([np.interp(t, g, uf[g, k]) for k in range(3)], 1)
+    uf = lowpass(uf, fps, cutoff)
+    uf /= np.linalg.norm(uf, axis=1, keepdims=True)
+    if keep_norm:
+        nf = np.interp(t, idx, n[idx, 0])[:, None]
+        return uf * nf
+    return uf
+
+
+def stable_twist(dm, rm, fps, cutoff=2.5, spike_deg=35.0, win=15):
+    """Référence de torsion lissée *autour de l'os*. On suit l'axe de l'os avec un repère
+    transporté sans torsion (rotation minimale d'une image à l'autre), on mesure l'angle de la
+    référence brute (ligne des jointures de la main) dans ce repère, et c'est cet angle qui est
+    nettoyé et lissé. Lisser directement la référence dans l'espace la ferait traîner derrière
+    l'os quand le bras bouge vite, jusqu'à devenir parallèle à l'os : la torsion basculerait."""
+    dm = np.asarray(dm, float)
+    rm = np.asarray(rm, float)
+    T = len(dm)
+    okd = np.isfinite(dm).all(1) & (np.linalg.norm(np.nan_to_num(dm), axis=1) > 1e-9)
+    if okd.sum() < 2:
+        return rm
+    t = np.arange(T)
+    idx = np.where(okd)[0]
+    a = np.stack([np.interp(t, idx, dm[idx, k]) for k in range(3)], 1)
+    a /= np.linalg.norm(a, axis=1, keepdims=True)
+    # repère transporté le long de l'axe
+    p = np.empty((T, 3))
+    seed = np.cross(a[0], [0.0, 0.0, 1.0])
+    if np.linalg.norm(seed) < 1e-3:
+        seed = np.cross(a[0], [1.0, 0.0, 0.0])
+    p[0] = seed / np.linalg.norm(seed)
+    for i in range(1, T):
+        v = np.cross(a[i - 1], a[i])
+        c = float(np.dot(a[i - 1], a[i]))
+        s2 = float(np.dot(v, v))
+        q = p[i - 1]
+        if s2 > 1e-12:
+            q = q * c + np.cross(v, q) + v * np.dot(v, q) * (1 - c) / s2
+        q = q - a[i] * np.dot(q, a[i])
+        p[i] = q / np.linalg.norm(q)
+    w = np.cross(a, p)
+    k = rm - a * np.sum(rm * a, 1, keepdims=True)
+    kn = np.linalg.norm(np.nan_to_num(k), axis=1)
+    ok = np.isfinite(k).all(1) & (kn > 1e-6 * (np.nanmedian(kn[kn > 0]) if (kn > 0).any() else 1.0))
+    if ok.sum() < 2:
+        return rm
+    g = np.where(ok)[0]
+    th = np.unwrap(np.arctan2(np.sum(w[g] * k[g], 1), np.sum(p[g] * k[g], 1)))
+    th = np.interp(t, g, th)
+    pad = win // 2
+    from numpy.lib.stride_tricks import sliding_window_view
+    med = np.median(sliding_window_view(np.concatenate([np.repeat(th[:1], pad), th, np.repeat(th[-1:], pad)]),
+                                        win), axis=-1)
+    good = ok & (np.degrees(np.abs(th - med)) <= spike_deg)
+    if good.sum() >= 2:
+        gg = np.where(good)[0]
+        th = np.interp(t, gg, th[gg])
+    th = lowpass(th[:, None], fps, cutoff)[:, 0]
+    return np.cos(th)[:, None] * p + np.sin(th)[:, None] * w
+
+
+def clean_rotations(q, fps, cutoff=8.0, spike_deg=20.0, win=7):
+    """Rotations (T,4) d'un os : signes rendus continus, pics isolés (écart à la médiane locale
+    > spike_deg) remplacés par interpolation, puis filtre passe-bas aller-retour.
+    Enlève les tressautements (torsion de l'avant-bras surtout) sans retarder le mouvement."""
+    q = np.array(q, float)
+    T = len(q)
+    if T < 2 * win:
+        return q
+    for i in range(1, T):
+        if np.dot(q[i], q[i - 1]) < 0:
+            q[i] = -q[i]
+    pad = win // 2
+    qp = np.concatenate([np.repeat(q[:1], pad, 0), q, np.repeat(q[-1:], pad, 0)])
+    from numpy.lib.stride_tricks import sliding_window_view
+    med = np.median(sliding_window_view(qp, win, axis=0), axis=-1)
+    med /= np.linalg.norm(med, axis=1, keepdims=True)
+    dev = np.degrees(2 * np.arccos(np.clip(np.abs(np.sum(q * med, 1)), 0, 1)))
+    bad = dev > spike_deg
+    if bad.any() and not bad.all():
+        good = np.where(~bad)[0]
+        t = np.arange(T)
+        q = np.stack([np.interp(t, good, q[good, k]) for k in range(4)], 1)
+    q = lowpass(q, fps, cutoff)
+    return q / np.linalg.norm(q, axis=1, keepdims=True)
 
 
 def write_action(obj, name, start_frame, channels):
