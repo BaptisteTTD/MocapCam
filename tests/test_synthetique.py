@@ -423,10 +423,18 @@ def test_fbx(path):
     err = max(np.linalg.norm(g[n] - r[n]) for g, r in zip(got, ref) for n in r)
     names = {b.name for b in a2.data.bones}
     n_frames = int(round(act.frame_range[1] - act.frame_range[0])) + 1
-    ok("export FBX squelette Mixamo", err < 1e-3 and len(names) == 65
+    # pose de repos du fichier = T-pose (bras à l'horizontale, jambes verticales)
+    M = a2.matrix_world.to_3x3()
+    tpose = {"LeftArm": (1, 0, 0), "LeftForeArm": (1, 0, 0), "RightArm": (-1, 0, 0), "RightForeArm": (-1, 0, 0),
+             "LeftUpLeg": (0, 0, -1), "RightLeg": (0, 0, -1), "Spine": (0, 0, 1)}
+    t_err = max(math.degrees(math.acos(min(1.0, float(np.dot(
+        np.array((M @ (a2.data.bones["mixamorig:" + n].tail_local - a2.data.bones["mixamorig:" + n].head_local)).normalized()),
+        np.array(v, float)))))) for n, v in tpose.items())
+    ok("export FBX squelette Mixamo", err < 1e-3 and len(names) == 65 and t_err < 2
        and all(n.startswith("mixamorig:") for n in names) and n_frames == rep["frames"],
-       f"{len(names)} os 'mixamorig:', {n_frames} images à {rep['fps']:g} i/s, animation « {act.name} », "
-       f"écart après réimport {err * 1000:.2f} mm, {os.path.getsize(dst) / 1e6:.1f} Mo")
+       f"{len(names)} os 'mixamorig:', pose de repos T-pose (écart {t_err:.1f}°), {n_frames} images à "
+       f"{rep['fps']:g} i/s, animation « {act.name} », écart après réimport {err * 1000:.2f} mm, "
+       f"{os.path.getsize(dst) / 1e6:.1f} Mo")
 
 
 # --------------------------------------------------------------------------- 5b. boules imprécises

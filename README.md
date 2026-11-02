@@ -184,8 +184,10 @@ dans `studio.json`. Pour aller plus vite au détriment de la précision : `"mode
 **Le FBX** (`prise_XXX.fbx`) est créé automatiquement à la fin du traitement, avec Blender
 (lancé en arrière-plan, sans fenêtre ; Blender doit être installé, il est trouvé tout seul).
 C'est l'équivalent d'une animation Mixamo téléchargée « sans skin » :
-* squelette aux **65 os Mixamo** (`mixamorig:Hips`, `mixamorig:LeftHandIndex1`, …), en T-pose,
-  aux proportions de l'acteur, animé corps et doigts, une clé par image (60 i/s) ;
+* squelette aux **65 os Mixamo** (`mixamorig:Hips`, `mixamorig:LeftHandIndex1`, …), aux
+  proportions de l'acteur, animé corps et doigts, une clé par image (60 i/s) ;
+* **pose de repos en T-pose** (bras à l'horizontale, paumes vers le bas, jambes droites) :
+  c'est la pose que voient Blender, Unity ou Unreal à l'import, sans image ajoutée à l'animation ;
 * Y vers le haut, personnage tourné vers +Z, à taille réelle, sans os de bout ajoutés ;
 * le personnage part de l'origine (déplacement relatif). Pour garder la position dans la zone
   de capture : `mocapcam fbx captures\prise_XXX --absolu`.

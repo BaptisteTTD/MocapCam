@@ -739,25 +739,66 @@ def create_point_empties(context, d, J, start_frame=1, coll_name="MocapCam_Point
 
 # --------------------------------------------------------------------------- export FBX
 
-def export_fbx(context, obj, filepath):
+def _key_rest_pose(obj, frame):
+    """Pose de repos (T-pose pour le squelette MocapCam) clé à `frame`, juste avant
+    l'animation. Le FBX écrit la position par défaut de chaque os à l'image courante :
+    en se plaçant sur cette image, la pose de repos du fichier est la T-pose, et
+    l'animation exportée (frame_start..frame_end) n'est pas modifiée."""
+    keyed = []
+    for pb in obj.pose.bones:
+        pb.location = (0.0, 0.0, 0.0)
+        pb.scale = (1.0, 1.0, 1.0)
+        paths = ["location", "scale"]
+        if pb.rotation_mode == "QUATERNION":
+            pb.rotation_quaternion = (1.0, 0.0, 0.0, 0.0)
+            paths.append("rotation_quaternion")
+        elif pb.rotation_mode == "AXIS_ANGLE":
+            pb.rotation_axis_angle = (0.0, 0.0, 1.0, 0.0)
+            paths.append("rotation_axis_angle")
+        else:
+            pb.rotation_euler = (0.0, 0.0, 0.0)
+            paths.append("rotation_euler")
+        for path in paths:
+            pb.keyframe_insert(path, frame=frame, group=pb.name)
+            keyed.append((pb, path))
+    return keyed
+
+
+def export_fbx(context, obj, filepath, rest_frame=True):
     """Exporte l'armature et son animation en FBX, comme une animation Mixamo
     « sans skin » : os 'mixamorig:', Y vers le haut, personnage face à +Z, sans os de bout
-    ajoutés, toutes les images gardées (pas de simplification)."""
+    ajoutés, toutes les images gardées (pas de simplification). La pose de repos du fichier
+    est celle de l'armature (T-pose pour le squelette MocapCam)."""
     if context.mode != "OBJECT":
         bpy.ops.object.mode_set(mode="OBJECT")
     for o in context.view_layer.objects:
         o.select_set(False)
     obj.select_set(True)
     context.view_layer.objects.active = obj
-    bpy.ops.export_scene.fbx(
-        filepath=filepath, use_selection=True, object_types={"ARMATURE"},
-        axis_forward="-Z", axis_up="Y", apply_unit_scale=True, global_scale=1.0,
-        apply_scale_options="FBX_SCALE_NONE",
-        add_leaf_bones=False, primary_bone_axis="Y", secondary_bone_axis="X",
-        armature_nodetype="NULL", use_armature_deform_only=False,
-        bake_anim=True, bake_anim_use_all_bones=True, bake_anim_use_nla_strips=False,
-        bake_anim_use_all_actions=False, bake_anim_force_startend_keying=True,
-        bake_anim_step=1.0, bake_anim_simplify_factor=0.0)
+    sc = context.scene
+    back = sc.frame_current
+    keyed = []
+    f_rest = sc.frame_start - 1
+    if rest_frame and obj.animation_data and obj.animation_data.action:
+        keyed = _key_rest_pose(obj, f_rest)
+        sc.frame_set(f_rest)
+    try:
+        bpy.ops.export_scene.fbx(
+            filepath=filepath, use_selection=True, object_types={"ARMATURE"},
+            axis_forward="-Z", axis_up="Y", apply_unit_scale=True, global_scale=1.0,
+            apply_scale_options="FBX_SCALE_NONE",
+            add_leaf_bones=False, primary_bone_axis="Y", secondary_bone_axis="X",
+            armature_nodetype="NULL", use_armature_deform_only=False,
+            bake_anim=True, bake_anim_use_all_bones=True, bake_anim_use_nla_strips=False,
+            bake_anim_use_all_actions=False, bake_anim_force_startend_keying=True,
+            bake_anim_step=1.0, bake_anim_simplify_factor=0.0)
+    finally:
+        for pb, path in keyed:
+            try:
+                pb.keyframe_delete(path, frame=f_rest)
+            except RuntimeError:
+                pass
+        sc.frame_set(back)
     return filepath
 
 
