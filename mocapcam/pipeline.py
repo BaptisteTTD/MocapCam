@@ -33,7 +33,8 @@ DEFAULT_STUDIO = {
                   "cutoff_body_hz": 6.0, "cutoff_hands_hz": 8.0},
     # affinage global du mouvement (os de longueur constante, fluidité, pieds posés)
     "refine": {"enabled": True, "smooth_body": 2.0, "smooth_hands": 8.0, "bone_weight": 2000.0,
-               "contact_weight": 2500.0, "tie_weight": 3000.0},
+               "contact_weight": 2500.0,
+               "knee_weight": 2000.0, "knee_min_deg": 2.0, "knee_side_deg": 30.0, "tie_weight": 3000.0},
 }
 
 

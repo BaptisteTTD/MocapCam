@@ -9,7 +9,10 @@ trajectoire 3D des articulations sur toute la prise, qui à la fois :
 * bouge de façon fluide (accélérations faibles), ce qui fait disparaître le bruit sans retard ;
   la pénalité est robuste : les vrais gestes vifs ne sont pas écrasés ;
 * garde fixe un pied posé au sol (pas de glissement ni de vibration des jambes et du bassin) ;
-* soude le poignet de la main à celui du bras.
+* soude le poignet de la main à celui du bras ;
+* plie les genoux comme une charnière : jamais vers l'arrière, et dans la direction du pied
+  quand la jambe est presque tendue (là où les points 2D ne disent plus de quel côté le
+  genou plie, ce qui le faisait « claquer » d'un côté à l'autre).
 
 Les trous sont comblés par la même occasion, en suivant la physique du mouvement.
 Le corps est résolu d'abord, puis chaque main, accrochée au poignet trouvé pour le corps.
@@ -64,6 +67,32 @@ def _body_smooth():
                  ("l_knee", 500), ("r_knee", 500)):
         k[INDEX[n]] = float(w)
     return k
+
+
+def _knee_res(X, legs, m_min, tan_max):
+    """Résidus « charnière » des genoux, (T, n_jambes, 2), en mètres.
+    legs : (hanche, genou, cheville, gros orteil, petit orteil, talon) en indices locaux.
+    On mesure l'écart du genou à la droite hanche-cheville, dans le repère du pied :
+    fo = vers l'avant (côté orteils), la = sur le côté.
+    0 : genou en arrière, ou presque tendu (fo < m_min) -> pénalisé ;
+    1 : genou qui part sur le côté au-delà de tan_max * fo -> pénalisé (près de l'extension
+        la tolérance tend vers 0 : le genou reste dans le plan du pied)."""
+    out = np.empty((X.shape[0], len(legs), 2))
+    for i, (h, k, a, bt, st, he) in enumerate(legs):
+        H, K, A = X[:, h], X[:, k], X[:, a]
+        u = A - H
+        u = u / np.maximum(np.linalg.norm(u, axis=1, keepdims=True), 1e-9)
+        o = (K - H) - u * np.sum((K - H) * u, 1, keepdims=True)
+        f = (X[:, bt] + X[:, st]) / 2 - X[:, he]
+        f = f - u * np.sum(f * u, 1, keepdims=True)
+        f = f / np.maximum(np.linalg.norm(f, axis=1, keepdims=True), 1e-9)
+        lat = np.cross(u, f)
+        fo = np.sum(o * f, 1)
+        la = np.sum(o * lat, 1)
+        out[:, i, 0] = np.minimum(fo - m_min, 0.0)
+        tol = tan_max * np.maximum(fo, m_min)
+        out[:, i, 1] = np.sign(la) * np.maximum(np.abs(la) - tol, 0.0)
+    return out
 
 
 # ----------------------------------------------------------------------------- observations
@@ -127,7 +156,7 @@ class _Problem:
     """Moindres carrés creux sur les positions X (T, J, 3) d'un groupe d'articulations."""
 
     def __init__(self, T, J, cams, obs, bones, L, kacc, anchors=(), contacts=None, k_contact=0.0,
-                 c_obs=2.5, c_acc=3.0, rel_to=None):
+                 c_obs=2.5, c_acc=3.0, rel_to=None, knees=(), k_knee=0.0, knee_min=0.0, knee_tan=0.6):
         self.T, self.J = T, J
         self.R = np.stack([c["R"] for c in cams])
         self.tv = np.stack([np.asarray(c["t"], float).ravel() for c in cams])
@@ -148,6 +177,8 @@ class _Problem:
         self.rel_to = rel_to
         if rel_to is not None:
             self.acc_j = self.acc_j[self.acc_j != rel_to]
+        self.knees = [tuple(int(v) for v in leg) for leg in knees] if k_knee > 0 else []
+        self.kk, self.knee_min, self.knee_tan = k_knee, knee_min, knee_tan
 
     def vid(self, t, j, k):
         return (t * self.J + j) * 3 + k
@@ -169,6 +200,8 @@ class _Problem:
         if len(self.cont):
             c = self.cont
             out.append(((X[c[:, 0], c[:, 1]] - X[c[:, 0] - 1, c[:, 1]]) * self.kc).ravel())
+        if self.knees:
+            out.append((_knee_res(X, self.knees, self.knee_min, self.knee_tan) * self.kk).ravel())
         self.n_rep, self.n_bone, self.n_acc = len(rep), len(bone), len(acc)
         return np.concatenate(out)
 
@@ -237,6 +270,27 @@ class _Problem:
             cols += [self.vid(tc, jc, kc), self.vid(tc - 1, jc, kc)]
             vals += [np.full(nc * 3, self.kc), np.full(nc * 3, -self.kc)]
             r0 += nc * 3
+        if self.knees:
+            # dérivées par différences centrées : chaque résidu ne dépend que des 6 points de
+            # sa jambe à la même image, on perturbe donc une coordonnée sur toutes les images
+            nK = len(self.knees)
+            ta = np.arange(T)
+            eps = 1e-5
+            for i, leg in enumerate(self.knees):
+                for j in leg:
+                    for k in range(3):
+                        Xp = X.copy()
+                        Xp[:, j, k] += eps
+                        rp = _knee_res(Xp[:, :, :], [leg], self.knee_min, self.knee_tan)[:, 0]
+                        Xp[:, j, k] -= 2 * eps
+                        rm = _knee_res(Xp[:, :, :], [leg], self.knee_min, self.knee_tan)[:, 0]
+                        dv = (rp - rm) / (2 * eps) * self.kk
+                        for m in range(2):
+                            nz = dv[:, m] != 0
+                            rows.append(r0 + (ta[nz] * nK + i) * 2 + m)
+                            cols.append(self.vid(ta[nz], j, k))
+                            vals.append(dv[nz, m])
+            r0 += T * nK * 2
         return coo_matrix((np.concatenate(vals), (np.concatenate(rows), np.concatenate(cols))),
                           shape=(r0, T * J * 3)).tocsc()
 
@@ -352,11 +406,21 @@ def optimize(X0, cams, poses, choices, fps, cfg=None, log=print, frames=None, ma
     sm = _body_smooth()
     kacc = np.array([sm[g] * usable[local[g]] for g in joints]) * cfg.get("smooth_body", 2.0) / U
     cont = _contacts(Xb, fps, U, local)
+    legs = []
+    for s in ("l", "r"):
+        leg = [local[INDEX[f"{s}_{n}"]] for n in ("hip", "knee", "ankle", "big_toe", "small_toe", "heel")]
+        if usable[leg].all():
+            legs.append(leg)
+    # flexion minimale du genou : un genou tendu à `knee_min_deg` près s'écarte de la droite
+    # hanche-cheville d'environ (cuisse x tibia / jambe) x angle = U/4 x angle
+    k_min = U / 4 * np.radians(cfg.get("knee_min_deg", 2.0))
+    knee_kw = dict(knees=legs, k_knee=cfg.get("knee_weight", 2000.0) / U, knee_min=k_min,
+                   knee_tan=np.tan(np.radians(cfg.get("knee_side_deg", 30.0))))
     e0 = None
     for k in range(2):                         # longueurs d'os ré-estimées une fois
         L = np.median(np.linalg.norm(Xb[:, ia] - Xb[:, ib], axis=2), axis=0)
         prob = _Problem(T, len(joints), cams, obs, bones, L, kacc, contacts=cont,
-                        k_contact=cfg.get("contact_weight", 2500.0) / U)
+                        k_contact=cfg.get("contact_weight", 2500.0) / U, **knee_kw)
         e0 = _median_err(prob, Xb.ravel()) if e0 is None else e0
         x, its = _solve(prob, Xb.ravel(), max_iter if k == 0 else max_iter // 3)
         Xb = x.reshape(T, len(joints), 3)
@@ -364,6 +428,9 @@ def optimize(X0, cams, poses, choices, fps, cfg=None, log=print, frames=None, ma
     sel = [g for g in joints if usable[local[g]]]
     out[:, sel] = Xb[:, [local[g] for g in sel]]
     lens = np.linalg.norm(Xb[:, ia] - Xb[:, ib], axis=2)
+    kr = _knee_res(Xb, legs, k_min, knee_kw["knee_tan"]) if legs else np.zeros((T, 0, 2))
+    stats["knees"] = dict(back_frames=int((kr[..., 0] < -0.002).sum()),
+                          side_frames=int((np.abs(kr[..., 1]) > 0.002).sum()))
     stats["body"] = dict(observations=int(len(obs[0])), contacts=int(len(cont)), iterations=its,
                          reproj_before_px=e0, reproj_after_px=e1,
                          bone_cv=float(np.median(np.std(lens, 0) / np.mean(lens, 0))))

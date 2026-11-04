@@ -362,11 +362,14 @@ def test_reconstruction(X_gt):
         return np.nanmedian(np.linalg.norm(a, axis=-1)) * 1000
     lens = np.linalg.norm(Xr[:, INDEX["l_hip"]] - Xr[:, INDEX["l_knee"]], axis=1)
     cv = np.nanstd(lens) / np.nanmean(lens)
+    # genoux en charnière : jamais pliés vers l'arrière
+    legs = [[INDEX[f"{s}_{n}"] for n in ("hip", "knee", "ankle", "big_toe", "small_toe", "heel")] for s in ("l", "r")]
+    kb = int((motion_opt._knee_res(np.nan_to_num(Xr), legs, 0.0, 10.0)[..., 0] < -0.002).sum())
     ok("affinage global du mouvement", eo[0] < eb[0] * 1.15 and eo[2] > 0.99 and eho[0] < eh[0] * 1.15
-       and cv < 0.01 and jit(Xr, body_idx) < jit(Xs, body_idx),
+       and cv < 0.01 and jit(Xr, body_idx) < jit(Xs, body_idx) and kb == 0,
        f"corps {eb[0]:.1f} -> {eo[0]:.1f} mm, mains {eh[0]:.1f} -> {eho[0]:.1f} mm (couverture {eho[2] * 100:.0f} %), "
        f"accélération résiduelle {jit(Xs, body_idx):.2f} -> {jit(Xr, body_idx):.2f} mm/image², cuisse constante à "
-       f"{cv * 100:.2f} %")
+       f"{cv * 100:.2f} %, genoux pliés vers l'arrière : {kb} images")
     ok("inversions G/D + personne parasite", stats["lr_swaps_fixed"] >= (X_gt.shape[0] // 7) - 2,
        f"{stats['lr_swaps_fixed']} inversions corrigées, {stats['frames_ok']}/{stats['frames']} images")
     cams_full = [dict(c, name=n) for n, c in zip(["iphone", "poco"], cams)]

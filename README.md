@@ -241,6 +241,7 @@ Le retarget marche avec n'importe quelle animation au squelette Mixamo, pas seul
 | `filtering.cutoff_body_hz` / `cutoff_hands_hz` | lissage de la première estimation (plus bas = plus lisse) |
 | `refine.smooth_body` / `smooth_hands` | fluidité imposée par l'affinage global, corps et doigts (plus haut = plus lisse, 2 et 8 par défaut) |
 | `refine.enabled` | `false` pour sauter l'affinage global (traitement plus rapide, mouvement moins propre) |
+| `refine.knee_min_deg` / `knee_side_deg` | genoux en charnière : flexion minimale (2° : jamais tendus à bloc ni pliés vers l'arrière) et écart maximal de leur direction par rapport au pied (30°) |
 | `filtering.max_gap_s` | durée maximale d'un trou comblé par interpolation |
 
 ## 10. Dépannage
