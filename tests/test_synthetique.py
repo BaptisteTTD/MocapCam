@@ -649,11 +649,23 @@ def test_blender(path, X_gt):
     res = bpy.ops.mocapcam.import_fbx(filepath=fbx_path)
     gen = bpy.context.scene.mocapcam_source
     assert res == {"FINISHED"} and gen is not None and gen.name == "prise_test"
-    # (b) personnage en A-pose : retarget avec l'opérateur
+    # (b) personnage en A-pose : retarget avec l'opérateur. Importer un personnage Mixamo
+    # (FBX à 30 i/s) passe la scène à 30 i/s : le retarget doit la remettre à la cadence de
+    # la capture, sinon l'animation est jouée au ralenti.
     apose = mb.create_mixamo_armature(bpy.context, J, name="Apose", pose="A")
     apose.location = (4, 0, 0)
     bpy.context.scene.mocapcam_target = apose
+    bpy.context.scene.render.fps = 30
     assert bpy.ops.mocapcam.retarget(hide_source=False) == {"FINISHED"}
+    fps_ok = mb.scene_fps(bpy.context.scene) == d["fps"] and mb.anim_fps(apose) == d["fps"]
+    # la cadence voyage dans le FBX : un import FBX standard la retrouve
+    before = set(bpy.data.objects)
+    bpy.ops.import_scene.fbx(filepath=fbx_path)
+    plain = [o for o in bpy.data.objects if o not in before and o.type == "ARMATURE"][0]
+    fps_ok = fps_ok and mb.anim_fps(plain) == d["fps"]
+    bpy.data.objects.remove(plain)
+    ok("Blender vitesse de l'animation conservée", fps_ok,
+       f"capture à {d['fps']:g} i/s, scène après retarget à {mb.scene_fps(bpy.context.scene):g} i/s")
     # (c) façon FBX Mixamo : objet tourné de 90° sur X, échelle 0.01, autres proportions
     M = mathutils.Matrix.Translation((-3, 0, 0)) @ mathutils.Matrix.Rotation(math.radians(90), 4, "X") @ mathutils.Matrix.Scale(0.01, 4)
     Jbig = {k: v * 1.15 for k, v in J.items()}

@@ -218,6 +218,9 @@ si Blender n'est pas trouvé ; le chemin peut aussi être mis dans `studio.json`
    * Le déplacement est mis à l'échelle du personnage. En mode *Relatif* (par défaut), il part
      de sa position actuelle ; en mode *Absolu*, il suit la zone de capture.
    * La source est cachée ensuite (case *Cacher la source*), son animation reste disponible.
+   * La scène est remise à la cadence de la capture (ex. 60 i/s). Importer un personnage
+     Mixamo (FBX à 30 i/s) passe la scène à 30 i/s et l'animation serait jouée au ralenti ;
+     si ça arrive après le retarget, le panneau l'affiche en rouge avec un bouton pour corriger.
 3. **Exporter en FBX** : le personnage animé, avec la pose de repos de son armature.
 
 Le retarget marche avec n'importe quelle animation au squelette Mixamo, pas seulement MocapCam.

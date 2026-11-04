@@ -1,7 +1,7 @@
 bl_info = {
     "name": "MocapCam",
     "author": "MocapCam",
-    "version": (0, 3, 1),
+    "version": (0, 3, 2),
     "blender": (3, 6, 0),
     "location": "Vue 3D > barre latérale (N) > MocapCam  |  Fichier > Importer > Animation MocapCam (.fbx)",
     "description": "Importe une animation MocapCam (FBX, squelette Mixamo) et la transfère (retarget) "
@@ -753,10 +753,52 @@ def transfer_motion(context, src, dst, root_mode="RELATIVE", start_frame=None, a
     rep = apply_motion(dst, J, fps, f0 if start_frame is None else start_frame, root_mode,
                        action_name=name, clean=False, twist=twist)
     rep.update(frames=f1 - f0 + 1)
+    src_fps = anim_fps(src)
+    if src_fps is not None:
+        dst[FPS_PROP] = src_fps
+        old = set_scene_fps(context.scene, src_fps)
+        rep.update(fps=src_fps, fps_was=old)
     return rep
 
 
 # --------------------------------------------------------------------------- export FBX
+
+FPS_PROP = "mocapcam_fps"
+
+
+def anim_fps(obj):
+    """Cadence propre de l'animation d'une armature (images/s), si connue. Elle est inscrite
+    dans le FBX (propriété de l'objet) et notée à l'import : importer ensuite un autre FBX
+    (un personnage Mixamo est à 30 i/s) change la cadence de la scène, pas celle-ci."""
+    if obj is None:
+        return None
+    v = obj.get(FPS_PROP)
+    if v is None and obj.animation_data and obj.animation_data.action:
+        v = obj.animation_data.action.get(FPS_PROP)
+    try:
+        v = float(v)
+    except (TypeError, ValueError):
+        return None
+    return v if v > 0 else None
+
+
+def scene_fps(scene):
+    return scene.render.fps / scene.render.fps_base
+
+
+def set_scene_fps(scene, fps):
+    """Règle la cadence de la scène ; renvoie l'ancienne si elle a changé, sinon None."""
+    old = scene_fps(scene)
+    if abs(old - fps) < 1e-3:
+        return None
+    scene.render.fps = max(1, int(round(fps)))
+    scene.render.fps_base = scene.render.fps / fps
+    return old
+
+
+def _fmt_fps(v):
+    return f"{v:.3f}".rstrip("0").rstrip(".")
+
 
 def _key_rest_pose(obj, frame):
     """Pose de repos (T-pose pour le squelette MocapCam) clé à `frame`, juste avant
@@ -796,6 +838,15 @@ def export_fbx(context, obj, filepath, rest_frame=True):
     context.view_layer.objects.active = obj
     sc = context.scene
     back = sc.frame_current
+    fps = anim_fps(obj)
+    if fps is None and obj.animation_data and obj.animation_data.action:
+        fps = scene_fps(sc)
+        obj[FPS_PROP] = fps
+    # le FBX convertit les images en temps avec la cadence de la scène : on exporte à la
+    # cadence de l'animation, sinon elle serait ralentie ou accélérée dans le fichier
+    fps_back = (sc.render.fps, sc.render.fps_base)
+    if fps is not None:
+        set_scene_fps(sc, fps)
     keyed = []
     f_rest = sc.frame_start - 1
     if rest_frame and obj.animation_data and obj.animation_data.action:
@@ -810,13 +861,14 @@ def export_fbx(context, obj, filepath, rest_frame=True):
             armature_nodetype="NULL", use_armature_deform_only=False,
             bake_anim=True, bake_anim_use_all_bones=True, bake_anim_use_nla_strips=False,
             bake_anim_use_all_actions=False, bake_anim_force_startend_keying=True,
-            bake_anim_step=1.0, bake_anim_simplify_factor=0.0)
+            bake_anim_step=1.0, bake_anim_simplify_factor=0.0, use_custom_props=True)
     finally:
         for pb, path in keyed:
             try:
                 pb.keyframe_delete(path, frame=f_rest)
             except RuntimeError:
                 pass
+        sc.render.fps, sc.render.fps_base = fps_back
         sc.frame_set(back)
     return filepath
 
@@ -831,6 +883,7 @@ def capture_to_fbx(src, dst, root_mode="RELATIVE"):
     take = os.path.basename(src).replace(".mocap.json", "").replace(".json", "")
     context.scene.name = take            # nom de l'animation (« take ») dans le FBX
     arm = create_mixamo_armature(context, J, name="Armature")   # même nom que chez Mixamo
+    arm[FPS_PROP] = float(d["fps"])
     rep = apply_motion(arm, J, d["fps"], 0, root_mode, action_name=take)
     export_fbx(context, arm, dst)
     rep.update(frames=int(d["frame_count"]), fps=float(d["fps"]), bones=len(arm.data.bones))
@@ -879,6 +932,10 @@ def import_animation(context, filepath):
     arm = max(arms, key=lambda o: len(o.data.bones))
     find_prefix(arm)                                # vérifie les noms Mixamo
     arm.name = os.path.splitext(os.path.basename(filepath))[0]
+    if anim_fps(arm) is None:
+        arm[FPS_PROP] = scene_fps(context.scene)
+    else:
+        set_scene_fps(context.scene, anim_fps(arm))
     ad = arm.animation_data
     if ad and ad.action:
         f0, f1 = (int(round(v)) for v in ad.action.frame_range)
@@ -948,8 +1005,12 @@ class MOCAPCAM_OT_retarget(bpy.types.Operator):
             o.select_set(False)
         dst.select_set(True)
         context.view_layer.objects.active = dst
-        self.report({"INFO"}, f"« {src.name} » -> « {dst.name} » : {rep['animated']} os animés, "
-                              f"{rep['frames']} images (déplacement × {rep.get('scale', 1):.2f})")
+        msg = (f"« {src.name} » -> « {dst.name} » : {rep['animated']} os animés, "
+               f"{rep['frames']} images (déplacement × {rep.get('scale', 1):.2f})")
+        if rep.get("fps_was"):
+            msg += (f" ; scène remise à {_fmt_fps(rep['fps'])} i/s (elle était à "
+                    f"{_fmt_fps(rep['fps_was'])} i/s : l'animation était jouée à la mauvaise vitesse)")
+        self.report({"INFO"}, msg)
         return {"FINISHED"}
 
 
@@ -975,6 +1036,31 @@ class MOCAPCAM_OT_export_fbx(bpy.types.Operator, ExportHelper):
         return {"FINISHED"}
 
 
+class MOCAPCAM_OT_fix_fps(bpy.types.Operator):
+    """Remettre la scène à la cadence de l'animation (vitesse réelle)"""
+    bl_idname = "mocapcam.fix_fps"
+    bl_label = "Remettre la bonne vitesse"
+    bl_options = {"REGISTER", "UNDO"}
+
+    def execute(self, context):
+        fps = _wanted_fps(context)
+        if fps is None:
+            return {"CANCELLED"}
+        set_scene_fps(context.scene, fps)
+        self.report({"INFO"}, f"Scène à {_fmt_fps(fps)} i/s")
+        return {"FINISHED"}
+
+
+def _wanted_fps(context):
+    sc = context.scene
+    for o in (sc.mocapcam_target, sc.mocapcam_source, context.active_object):
+        if o is not None and o.type == "ARMATURE" and o.animation_data and o.animation_data.action:
+            f = anim_fps(o)
+            if f is not None:
+                return f
+    return None
+
+
 def _prefix_label(lay, o):
     if o is None:
         return
@@ -994,6 +1080,12 @@ class MOCAPCAM_PT_panel(bpy.types.Panel):
     def draw(self, context):
         sc = context.scene
         lay = self.layout
+        want = _wanted_fps(context)
+        if want is not None and abs(scene_fps(sc) - want) > 1e-3:
+            box = lay.box()
+            box.alert = True
+            box.label(text=f"Animation à {_fmt_fps(want)} i/s, scène à {_fmt_fps(scene_fps(sc))} i/s", icon="ERROR")
+            box.operator(MOCAPCAM_OT_fix_fps.bl_idname, text=f"Remettre la scène à {_fmt_fps(want)} i/s")
         box = lay.box()
         box.label(text="1. Animation", icon="ARMATURE_DATA")
         box.operator(MOCAPCAM_OT_import_fbx.bl_idname, icon="IMPORT")
@@ -1015,7 +1107,8 @@ def menu_export(self, context):
     self.layout.operator(MOCAPCAM_OT_export_fbx.bl_idname, text="FBX MocapCam (Mixamo)")
 
 
-CLASSES = (MOCAPCAM_OT_import_fbx, MOCAPCAM_OT_retarget, MOCAPCAM_OT_export_fbx, MOCAPCAM_PT_panel)
+CLASSES = (MOCAPCAM_OT_import_fbx, MOCAPCAM_OT_retarget, MOCAPCAM_OT_export_fbx, MOCAPCAM_OT_fix_fps,
+           MOCAPCAM_PT_panel)
 
 
 def register():
